@@ -205,7 +205,7 @@ bool denied_podman_arg(std::string_view value, const QuadletPolicy& policy)
             continue;
         }
         if (!policy.allow_privileged &&
-            (lower_ascii(part) == "--privileged" || lower_ascii(part) == "--privileged=true"))
+            (lower_ascii(part) == "--privileged" || starts_with_option_assignment(lower_ascii(part), "--privileged")))
         {
             return true;
         }
@@ -305,7 +305,6 @@ Result<void> validate_allowed_keys(const ParsedQuadlet& parsed)
           "Environment",
           "ReadOnly",
           "NoNewPrivileges",
-          "Privileged",
           "DropCapability",
           "Network",
           "Volume",
@@ -831,14 +830,6 @@ Result<void> validate_quadlet_policy(const QuadletFile& quadlet, const QuadletPo
         }
     }
 
-    for (const auto& value : parsed->values("Container", "Privileged"))
-    {
-        if (!policy.allow_privileged && truthy(value))
-        {
-            return std::unexpected(make_error(ErrorKind::policy,
-                                              "Quadlet Privileged=true is not allowed"));
-        }
-    }
     for (const auto& value : parsed->values("Container", "Network"))
     {
         if (!policy.allow_host_network && equals_key(value, "host"))

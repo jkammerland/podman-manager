@@ -7,12 +7,16 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <iostream>
 #include <memory>
+#include <optional>
+#include <poll.h>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -29,8 +33,9 @@ void test_check(bool condition, const char* expression, const char* file, int li
 {
     if (!condition)
     {
-        std::cerr << file << ':' << line << ": check failed: " << expression << '\n';
-        std::abort();
+        std::ostringstream message;
+        message << file << ':' << line << ": check failed: " << expression;
+        throw std::runtime_error{message.str()};
     }
 }
 
@@ -57,15 +62,36 @@ class FakeSystemdController final : public pm::UserSystemdController
 {
 public:
     mutable std::vector<std::string> calls;
+    std::optional<pm::PodmanTarget> expected_target;
 
-    pm::Result<void> daemon_reload(const pm::PodmanTarget&) const override
+    void verify_target(const pm::PodmanTarget& target) const
     {
+        if (expected_target)
+        {
+            assert(target.uid == expected_target->uid);
+            assert(target.user_name == expected_target->user_name);
+            assert(target.runtime_dir == expected_target->runtime_dir);
+            assert(target.socket_path == expected_target->socket_path);
+            assert(target.api_version == expected_target->api_version);
+            return;
+        }
+        assert(target.uid == getuid());
+        assert(!target.user_name.empty());
+        assert(!target.runtime_dir.empty());
+        assert(!target.socket_path.empty());
+    }
+
+    pm::Result<void> daemon_reload(const pm::PodmanTarget& target) const override
+    {
+        verify_target(target);
         calls.push_back("daemon-reload");
         return {};
     }
 
-    pm::Result<pm::UnitOperationResult> start_unit(const pm::PodmanTarget&, std::string_view unit) const override
+    pm::Result<pm::UnitOperationResult> start_unit(const pm::PodmanTarget& target,
+                                                   std::string_view unit) const override
     {
+        verify_target(target);
         calls.push_back("start " + std::string{unit});
         pm::UnitOperationResult out;
         out.job_path = "/org/freedesktop/systemd1/job/start";
@@ -76,8 +102,10 @@ public:
         return out;
     }
 
-    pm::Result<pm::UnitOperationResult> restart_unit(const pm::PodmanTarget&, std::string_view unit) const override
+    pm::Result<pm::UnitOperationResult> restart_unit(const pm::PodmanTarget& target,
+                                                     std::string_view unit) const override
     {
+        verify_target(target);
         calls.push_back("restart " + std::string{unit});
         pm::UnitOperationResult out;
         out.job_path = "/org/freedesktop/systemd1/job/restart";
@@ -88,8 +116,10 @@ public:
         return out;
     }
 
-    pm::Result<pm::UnitOperationResult> stop_unit(const pm::PodmanTarget&, std::string_view unit) const override
+    pm::Result<pm::UnitOperationResult> stop_unit(const pm::PodmanTarget& target,
+                                                  std::string_view unit) const override
     {
+        verify_target(target);
         calls.push_back("stop " + std::string{unit});
         pm::UnitOperationResult out;
         out.job_path = "/org/freedesktop/systemd1/job/stop";
@@ -100,8 +130,9 @@ public:
         return out;
     }
 
-    pm::Result<pm::UnitStatus> status(const pm::PodmanTarget&, std::string_view unit) const override
+    pm::Result<pm::UnitStatus> status(const pm::PodmanTarget& target, std::string_view unit) const override
     {
+        verify_target(target);
         calls.push_back("status " + std::string{unit});
         return pm::UnitStatus{.unit = std::string{unit},
                               .load_state = "loaded",
@@ -315,6 +346,32 @@ struct UnixListener
         std::filesystem::remove(path, ec);
     }
 };
+
+int accept_with_timeout(int listener_fd)
+{
+    pollfd pfd{.fd = listener_fd, .events = POLLIN, .revents = 0};
+    for (;;)
+    {
+        const int ready = poll(&pfd, 1, 2000);
+        if (ready < 0 && errno == EINTR)
+        {
+            continue;
+        }
+        assert(ready > 0);
+        assert((pfd.revents & POLLIN) != 0);
+        const int client = accept(listener_fd, nullptr, nullptr);
+        assert(client >= 0);
+        return client;
+    }
+}
+
+void rethrow_if_set(const std::exception_ptr& error)
+{
+    if (error)
+    {
+        std::rethrow_exception(error);
+    }
+}
 
 std::string read_http_request(int client)
 {
@@ -728,6 +785,10 @@ void test_quadlet_parser_policy_edges()
         "--net=host",
         "--pid host",
         "--userns \"host\"",
+        "--privileged=1",
+        "--privileged=t",
+        "--privileged=true",
+        "--privileged=false",
         "--device=/dev/fuse",
         "-v /:/host",
     };
@@ -742,7 +803,17 @@ void test_quadlet_parser_policy_edges()
 
     quadlet.contents = "[Container]\nImage=busybox\n"
                        "Label=com.example.podman-manager.managed=true\n"
-                       "Privileged=true\n"
+                       "PodmanArgs=--privileged\n";
+    assert(!pm::validate_quadlet_policy(quadlet, podman_args_policy));
+    podman_args_policy.allow_privileged = true;
+    assert(pm::validate_quadlet_policy(quadlet, podman_args_policy));
+    quadlet.contents = "[Container]\nImage=busybox\n"
+                       "Label=com.example.podman-manager.managed=true\n"
+                       "PodmanArgs=--privileged=true\n";
+    assert(pm::validate_quadlet_policy(quadlet, podman_args_policy));
+
+    quadlet.contents = "[Container]\nImage=busybox\n"
+                       "Label=com.example.podman-manager.managed=true\n"
                        "Network=host\n"
                        "PID=host\n"
                        "IPCHost=true\n"
@@ -841,6 +912,10 @@ void test_deployment_orchestrator_installs_and_restarts()
     assert(deployed->systemd_unit == "demo.service");
     assert(deployed->job_path == "/org/freedesktop/systemd1/job/restart");
     assert(deployed->status);
+    assert(deployed->status->unit == "demo.service");
+    assert(deployed->status->load_state == "loaded");
+    assert(deployed->status->active_state == "active");
+    assert(deployed->status->sub_state == "running");
     assert(systemd->calls.size() == 2);
     assert(systemd->calls[0] == "daemon-reload");
     assert(systemd->calls[1] == "restart demo.service");
@@ -883,6 +958,17 @@ void test_deployment_dry_run_has_no_side_effects()
     assert(deployed);
     assert(deployed->dry_run);
     assert(deployed->installed_quadlet_path == layout.quadlet_path(getuid(), "demo.container"));
+    assert(systemd->calls.empty());
+    assert(!std::filesystem::exists(layout.admin_user_root));
+
+    auto archive_bundle = demo_bundle();
+    archive_bundle.image_archive = pm::ImageArchive{.path = "missing.oci.tar", .expected_sha256 = "abc"};
+    options.load_image_archive = true;
+    options.image_archive_root = temp.path() / "staging";
+    pm::DeploymentOrchestrator archive_orchestrator{pm::QuadletInstaller{layout}, systemd, options};
+    auto rejected = archive_orchestrator.deploy(archive_bundle);
+    assert(!rejected);
+    assert(rejected.error().message.find("expected_sha256") != std::string::npos);
     assert(systemd->calls.empty());
     assert(!std::filesystem::exists(layout.admin_user_root));
 }
@@ -956,6 +1042,8 @@ void test_deployment_archive_path_hardening()
         out << "fake-tar";
     }
     std::filesystem::create_symlink("demo.oci.tar", staging_root / "images" / "link.oci.tar");
+    const auto fifo = staging_root / "images" / "pipe.oci.tar";
+    assert(mkfifo(fifo.c_str(), 0600) == 0);
 
     pm::QuadletInstallLayout layout;
     layout.admin_user_root = temp.path() / "quadlets";
@@ -987,13 +1075,25 @@ void test_deployment_archive_path_hardening()
     assert(!dotdot_result);
     assert(dotdot_result.error().message.find("must not contain") != std::string::npos);
 
+    auto embedded_dotdot_result = deploy_with_archive("images/../demo.oci.tar");
+    assert(!embedded_dotdot_result);
+    assert(embedded_dotdot_result.error().message.find("must not contain") != std::string::npos);
+
+    auto absolute_embedded_dotdot_result = deploy_with_archive(staging_root / "images" / ".." / "demo.oci.tar");
+    assert(!absolute_embedded_dotdot_result);
+    assert(absolute_embedded_dotdot_result.error().message.find("must not contain") != std::string::npos);
+
     auto directory_result = deploy_with_archive("images");
     assert(!directory_result);
     assert(directory_result.error().message.find("regular file") != std::string::npos);
 
     auto symlink_result = deploy_with_archive("images/link.oci.tar");
     assert(!symlink_result);
-    assert(symlink_result.error().kind == pm::ErrorKind::filesystem);
+    assert(symlink_result.error().message.find("regular file") != std::string::npos);
+
+    auto fifo_result = deploy_with_archive("images/pipe.oci.tar");
+    assert(!fifo_result);
+    assert(fifo_result.error().message.find("regular file") != std::string::npos);
 
     auto too_large_result = deploy_with_archive("images/demo.oci.tar", 1);
     assert(!too_large_result);
@@ -1117,6 +1217,8 @@ void test_deployment_rejects_unverified_or_unstaged_archive()
     auto deployed = orchestrator.deploy(bundle);
     assert(!deployed);
     assert(deployed.error().message.find("image_archive_root") != std::string::npos);
+    assert(systemd->calls.empty());
+    assert(!std::filesystem::exists(layout.quadlet_path(getuid(), "demo.container")));
 
     bundle.image_archive->expected_sha256 = "abc";
     options.image_archive_root = temp.path();
@@ -1124,6 +1226,8 @@ void test_deployment_rejects_unverified_or_unstaged_archive()
     deployed = digest_orchestrator.deploy(bundle);
     assert(!deployed);
     assert(deployed.error().message.find("expected_sha256") != std::string::npos);
+    assert(systemd->calls.empty());
+    assert(!std::filesystem::exists(layout.quadlet_path(getuid(), "demo.container")));
 }
 
 [[using gentest: test]]
@@ -1146,27 +1250,34 @@ void test_deployment_loads_staged_archive_with_custom_runtime_layout()
 
     std::promise<void> ready;
     std::vector<std::string> requests;
+    std::exception_ptr server_error;
     std::jthread server{[&](std::stop_token) {
-        ready.set_value();
-        for (int i = 0; i < 2; ++i)
+        try
         {
-            const int client = accept(listener.fd, nullptr, nullptr);
-            assert(client >= 0);
-            auto request = read_http_request(client);
-            requests.push_back(request);
-            if (request.starts_with("GET /_ping "))
+            ready.set_value();
+            for (int i = 0; i < 2; ++i)
             {
-                send_response(client, 200, "OK", "Libpod-API-Version: 5.0.0\r\n");
+                const int client = accept_with_timeout(listener.fd);
+                auto request = read_http_request(client);
+                requests.push_back(request);
+                if (request.starts_with("GET /_ping "))
+                {
+                    send_response(client, 200, "OK", "Libpod-API-Version: 5.0.0\r\n");
+                }
+                else if (request.starts_with("POST /v5.0.0/libpod/images/load "))
+                {
+                    send_response(client, 200, R"({"Names":["localhost/demo:latest"]})");
+                }
+                else
+                {
+                    send_response(client, 500, request);
+                }
+                close(client);
             }
-            else if (request.starts_with("POST /v5.0.0/libpod/images/load "))
-            {
-                send_response(client, 200, R"({"Names":["localhost/demo:latest"]})");
-            }
-            else
-            {
-                send_response(client, 500, request);
-            }
-            close(client);
+        }
+        catch (...)
+        {
+            server_error = std::current_exception();
         }
     }};
     ready.get_future().wait();
@@ -1183,6 +1294,9 @@ void test_deployment_loads_staged_archive_with_custom_runtime_layout()
     bundle.quadlet.contents = valid_quadlet_contents();
 
     auto systemd = std::make_shared<FakeSystemdController>();
+    auto expected_target = pm::resolve_uid(getuid(), runtime_layout, "5.0.0");
+    assert(expected_target);
+    systemd->expected_target = *expected_target;
     pm::DeploymentOptions options;
     options.runtime_layout = runtime_layout;
     options.image_archive_root = staging_root;
@@ -1191,6 +1305,7 @@ void test_deployment_loads_staged_archive_with_custom_runtime_layout()
     auto deployed = orchestrator.deploy(bundle);
     assert(deployed);
     server.join();
+    rethrow_if_set(server_error);
     assert(requests.size() == 2);
     assert(requests[1].find("\r\n\r\nfake-tar") != std::string::npos);
 }
@@ -1203,31 +1318,38 @@ void test_podman_client_against_fake_unix_server()
 
     std::promise<void> ready;
     std::vector<std::string> requests;
+    std::exception_ptr server_error;
     std::jthread server{[&](std::stop_token) {
-        ready.set_value();
-        for (int i = 0; i < 3; ++i)
+        try
         {
-            const int client = accept(listener.fd, nullptr, nullptr);
-            assert(client >= 0);
-            auto request = read_http_request(client);
-            requests.push_back(request);
-            if (request.starts_with("GET /_ping "))
+            ready.set_value();
+            for (int i = 0; i < 3; ++i)
             {
-                send_response(client, 200, "OK", "Libpod-API-Version: 5.0.0\r\n");
+                const int client = accept_with_timeout(listener.fd);
+                auto request = read_http_request(client);
+                requests.push_back(request);
+                if (request.starts_with("GET /_ping "))
+                {
+                    send_response(client, 200, "OK", "Libpod-API-Version: 5.0.0\r\n");
+                }
+                else if (request.starts_with("POST /v5.0.0/libpod/containers/create "))
+                {
+                    send_response(client, 201, R"({"Id":"abc"})");
+                }
+                else if (request.starts_with("POST /v5.0.0/libpod/containers/demo/start "))
+                {
+                    send_response(client, 204, "");
+                }
+                else
+                {
+                    send_response(client, 500, request);
+                }
+                close(client);
             }
-            else if (request.starts_with("POST /v5.0.0/libpod/containers/create "))
-            {
-                send_response(client, 201, R"({"Id":"abc"})");
-            }
-            else if (request.starts_with("POST /v5.0.0/libpod/containers/demo/start "))
-            {
-                send_response(client, 204, "");
-            }
-            else
-            {
-                send_response(client, 500, request);
-            }
-            close(client);
+        }
+        catch (...)
+        {
+            server_error = std::current_exception();
         }
     }};
     ready.get_future().wait();
@@ -1247,7 +1369,11 @@ void test_podman_client_against_fake_unix_server()
     assert(client.start_container("demo"));
 
     server.join();
+    rethrow_if_set(server_error);
     assert(requests.size() == 3);
+    assert(requests[1].starts_with("POST /v5.0.0/libpod/containers/create "));
+    assert(requests[1].find("Content-Type: application/json") != std::string::npos);
+    assert(requests[1].find(R"("name":"demo")") != std::string::npos);
     assert(requests[1].find(R"("image":"busybox")") != std::string::npos);
 }
 
@@ -1264,13 +1390,20 @@ void test_podman_client_load_image_archive()
     UnixListener listener{temp.path() / "podman.sock"};
     std::promise<void> ready;
     std::string request;
+    std::exception_ptr server_error;
     std::jthread server{[&](std::stop_token) {
-        ready.set_value();
-        const int client = accept(listener.fd, nullptr, nullptr);
-        assert(client >= 0);
-        request = read_http_request(client);
-        send_response(client, 200, R"({"Names":["localhost/demo:latest"]})");
-        close(client);
+        try
+        {
+            ready.set_value();
+            const int client = accept_with_timeout(listener.fd);
+            request = read_http_request(client);
+            send_response(client, 200, R"({"Names":["localhost/demo:latest"]})");
+            close(client);
+        }
+        catch (...)
+        {
+            server_error = std::current_exception();
+        }
     }};
     ready.get_future().wait();
 
@@ -1284,6 +1417,7 @@ void test_podman_client_load_image_archive()
     assert(loaded);
 
     server.join();
+    rethrow_if_set(server_error);
     assert(request.starts_with("POST /v5.0.0/libpod/images/load "));
     assert(request.find("Content-Type: application/x-tar") != std::string::npos);
     assert(request.find("\r\n\r\nfake-tar") != std::string::npos);

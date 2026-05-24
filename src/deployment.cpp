@@ -4,6 +4,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <iterator>
+#include <optional>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -71,6 +72,16 @@ bool path_component_is_safe(const std::filesystem::path& component)
 Result<std::filesystem::path> relative_staged_path(const std::filesystem::path& root,
                                                    const std::filesystem::path& path)
 {
+    for (const auto& component : path)
+    {
+        if (!path_component_is_safe(component))
+        {
+            return std::unexpected(make_error(ErrorKind::policy,
+                                              "image archive path must not contain '.' or '..': " +
+                                                  path.string()));
+        }
+    }
+
     auto normalized = path.lexically_normal();
     if (normalized.is_absolute())
     {
@@ -188,9 +199,34 @@ Result<OpenArchive> open_staged_image_archive(const ImageArchive& archive,
         const auto next = std::next(component);
         const auto name = component->string();
         const bool final = next == relative->end();
+        if (final)
+        {
+            struct stat st
+            {
+            };
+            if (fstatat(current.get(), name.c_str(), &st, AT_SYMLINK_NOFOLLOW) != 0)
+            {
+                return std::unexpected(make_error(ErrorKind::filesystem,
+                                                  "failed to stat staged image archive component '" + name + "': " +
+                                                      std::strerror(errno),
+                                                  0,
+                                                  errno));
+            }
+            if (!S_ISREG(st.st_mode))
+            {
+                return std::unexpected(make_error(ErrorKind::policy,
+                                                  "staged image archive must be a regular file"));
+            }
+            if (st.st_size < 0 || static_cast<uintmax_t>(st.st_size) > options.max_image_archive_bytes)
+            {
+                return std::unexpected(make_error(ErrorKind::policy,
+                                                  "staged image archive is too large"));
+            }
+        }
+
         FileDescriptor next_fd{openat(current.get(),
                                       name.c_str(),
-                                      final ? (O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+                                      final ? (O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
                                             : (O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW))};
         if (next_fd.get() < 0)
         {
@@ -469,6 +505,17 @@ Result<DeploymentResult> DeploymentOrchestrator::deploy(const DeploymentBundle& 
     result.systemd_unit = expected->systemd_unit;
     result.dry_run = options_.dry_run;
 
+    std::optional<OpenArchive> archive;
+    if (options_.load_image_archive && bundle.image_archive)
+    {
+        auto opened = open_staged_image_archive(*bundle.image_archive, options_);
+        if (!opened)
+        {
+            return std::unexpected(opened.error());
+        }
+        archive = std::move(*opened);
+    }
+
     if (options_.dry_run)
     {
         return result;
@@ -491,13 +538,8 @@ Result<DeploymentResult> DeploymentOrchestrator::deploy(const DeploymentBundle& 
         }
     }
 
-    if (options_.load_image_archive && bundle.image_archive)
+    if (archive)
     {
-        auto archive = open_staged_image_archive(*bundle.image_archive, options_);
-        if (!archive)
-        {
-            return std::unexpected(archive.error());
-        }
         PodmanClient podman{*target};
         if (auto ping = podman.ping(); !ping)
         {

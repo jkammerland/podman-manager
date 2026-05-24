@@ -12,6 +12,11 @@ option(PODMAN_MANAGER_WITH_SDBUS "Build the sdbus-c++ systemd backend when avail
 set(PODMAN_MANAGER_GENTEST_SOURCE_DIR "" CACHE PATH
     "Local gentest source checkout override for offline builds")
 
+if(PODMAN_MANAGER_BUILD_TESTS)
+    set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL
+        "Export compile commands for gentest code generation" FORCE)
+endif()
+
 find_package(CURL REQUIRED)
 find_package(Threads REQUIRED)
 find_package(PkgConfig QUIET)
@@ -69,6 +74,14 @@ if(PODMAN_MANAGER_BUILD_EXAMPLES)
 endif()
 
 if(PODMAN_MANAGER_BUILD_TESTS)
+    get_property(is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+    if(is_multi_config)
+        message(FATAL_ERROR
+            "PODMAN_MANAGER_BUILD_TESTS requires a single-config generator because "
+            "gentest code generation consumes compile_commands.json. Use Ninja/Unix "
+            "Makefiles or configure with -DPODMAN_MANAGER_BUILD_TESTS=OFF.")
+    endif()
+
     enable_testing()
 
     find_package(gentest CONFIG QUIET)
@@ -83,7 +96,7 @@ if(PODMAN_MANAGER_BUILD_TESTS)
             FetchContent_Declare(
                 gentest
                 GIT_REPOSITORY https://github.com/jkammerland/gentest.git
-                GIT_TAG e651549b9c0d2f7d7cb7fbc72dd287092c871e05)
+                GIT_TAG 189a02de1932723671c4a103509d26f027bb8fc7)
         endif()
         FetchContent_MakeAvailable(gentest)
     endif()
