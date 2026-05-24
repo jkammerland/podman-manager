@@ -40,11 +40,40 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+The repo also carries CMake presets extracted from the cgen `presets` layer and
+trimmed for this project:
+
+```bash
+cmake --preset=debug
+cmake --build --preset=debug
+ctest --preset=debug
+
+cmake --workflow --preset=nosdbus
+```
+
 Required build dependency: libcurl. If `sdbus-c++` is available, CMake also
 builds the optional D-Bus systemd backend. The example service intentionally
 uses a small local HTTP listener instead of `uWebSockets` because `uWebSockets`
 is not installed in this environment. The orchestration handler is separate from
 the listener so a `uWebSockets` adapter can replace it later.
+
+## Tests
+
+The default test target remains a zero-dependency C++ executable registered with
+CTest. For toolchains with CMake 3.31+ and gentest codegen support, the same
+test source can be built through the cgen-style gentest layer:
+
+```bash
+cmake --preset=gentest
+cmake --build --preset=gentest
+ctest --preset=gentest
+```
+
+If you have a local gentest checkout, configure with:
+
+```bash
+cmake --preset=gentest -DPODMAN_MANAGER_GENTEST_SOURCE_DIR=/path/to/gentest
+```
 
 ## Library Surface
 

@@ -8,7 +8,10 @@ project(
 
 option(PODMAN_MANAGER_BUILD_EXAMPLES "Build example services" ON)
 option(PODMAN_MANAGER_BUILD_TESTS "Build tests" ON)
+option(PODMAN_MANAGER_USE_GENTEST "Build tests with gentest attribute-driven discovery" OFF)
 option(PODMAN_MANAGER_WITH_SDBUS "Build the sdbus-c++ systemd backend when available" ON)
+set(PODMAN_MANAGER_GENTEST_SOURCE_DIR "" CACHE PATH
+    "Optional local gentest source checkout used when PODMAN_MANAGER_USE_GENTEST=ON")
 
 find_package(CURL REQUIRED)
 find_package(Threads REQUIRED)
@@ -71,11 +74,40 @@ if(PODMAN_MANAGER_BUILD_TESTS)
 
     add_executable(podman_manager_tests tests/podman_manager_tests.cpp)
     target_compile_features(podman_manager_tests PRIVATE cxx_std_23)
-    target_link_libraries(podman_manager_tests PRIVATE podman_manager::podman_manager)
     target_compile_options(
         podman_manager_tests
         PRIVATE
-            $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -Wpedantic>)
+            $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -Wpedantic -Wno-attributes -Wno-unused-function -Wno-unused-private-field>
+            $<$<CXX_COMPILER_ID:MSVC>:/wd5030>)
 
-    add_test(NAME podman_manager_tests COMMAND podman_manager_tests)
+    if(PODMAN_MANAGER_USE_GENTEST)
+        if(CMAKE_VERSION VERSION_LESS "3.31")
+            message(FATAL_ERROR "PODMAN_MANAGER_USE_GENTEST requires CMake >= 3.31")
+        endif()
+
+        find_package(gentest CONFIG QUIET)
+        if(NOT TARGET gentest::gentest_main)
+            include(FetchContent)
+            set(gentest_BUILD_TESTING OFF CACHE BOOL "Do not build gentest's own test suite" FORCE)
+            set(GENTEST_BUILD_CODEGEN ON CACHE BOOL "Build gentest_codegen for podman_manager tests" FORCE)
+
+            if(PODMAN_MANAGER_GENTEST_SOURCE_DIR)
+                FetchContent_Declare(gentest SOURCE_DIR "${PODMAN_MANAGER_GENTEST_SOURCE_DIR}")
+            else()
+                FetchContent_Declare(
+                    gentest
+                    GIT_REPOSITORY https://github.com/jkammerland/gentest.git
+                    GIT_TAG master)
+            endif()
+            FetchContent_MakeAvailable(gentest)
+        endif()
+
+        target_compile_definitions(podman_manager_tests PRIVATE PODMAN_MANAGER_USE_GENTEST=1)
+        target_link_libraries(podman_manager_tests PRIVATE podman_manager::podman_manager gentest::gentest_main)
+        gentest_attach_codegen(podman_manager_tests)
+        gentest_discover_tests(podman_manager_tests)
+    else()
+        target_link_libraries(podman_manager_tests PRIVATE podman_manager::podman_manager)
+        add_test(NAME podman_manager_tests COMMAND podman_manager_tests)
+    endif()
 endif()

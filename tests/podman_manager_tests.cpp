@@ -1,5 +1,10 @@
 #include "podman_manager/podman_manager.hpp"
 
+#ifdef PODMAN_MANAGER_USE_GENTEST
+#include "gentest/attributes.h"
+#include "gentest/runner.h"
+#endif
+
 #include <cassert>
 #include <cerrno>
 #include <cstdlib>
@@ -31,8 +36,10 @@ void test_check(bool condition, const char* expression, const char* file, int li
     }
 }
 
+#define PM_CHECK(expr) test_check(static_cast<bool>(expr), #expr, __FILE__, __LINE__)
+
 #undef assert
-#define assert(expr) test_check(static_cast<bool>(expr), #expr, __FILE__, __LINE__)
+#define assert(expr) PM_CHECK(expr)
 
 std::string valid_quadlet_contents()
 {
@@ -290,7 +297,9 @@ void send_response(int client, int status, std::string body = "OK", std::string 
     const auto response = out.str();
     assert(send(client, response.data(), response.size(), MSG_NOSIGNAL) > 0);
 }
+}
 
+[[using gentest: test]]
 void test_container_spec_json()
 {
     pm::ContainerSpec spec;
@@ -313,6 +322,7 @@ void test_container_spec_json()
     assert(json->find(R"("cpus":"2-3")") != std::string::npos);
 }
 
+[[using gentest: test]]
 void test_container_spec_validation_edges()
 {
     pm::ContainerSpec invalid_name;
@@ -333,6 +343,7 @@ void test_container_spec_validation_edges()
     assert(result.error().kind == pm::ErrorKind::policy);
 }
 
+[[using gentest: test]]
 void test_url_codec()
 {
     assert(pm::url_encode_component("a b/c") == "a%20b%2Fc");
@@ -342,6 +353,7 @@ void test_url_codec()
     assert(!pm::url_decode_component("%X0"));
 }
 
+[[using gentest: test]]
 void test_socket_validation()
 {
     TempDir temp;
@@ -362,6 +374,7 @@ void test_socket_validation()
     assert(!pm::validate_podman_socket(target, options));
 }
 
+[[using gentest: test]]
 void test_systemd_args()
 {
     pm::UserSlicePolicy policy{.uid = 1000,
@@ -391,6 +404,7 @@ void test_systemd_args()
     assert(!pm::build_systemctl_user_args(target, "restart", "-demo.service"));
 }
 
+[[using gentest: test]]
 void test_quadlet_policy_and_install()
 {
     pm::QuadletFile quadlet;
@@ -496,6 +510,7 @@ void test_quadlet_policy_and_install()
     assert(!limited_installer.expected_install(getuid(), bad));
 }
 
+[[using gentest: test]]
 void test_deployment_orchestrator_installs_and_restarts()
 {
     TempDir temp;
@@ -529,6 +544,7 @@ void test_deployment_orchestrator_installs_and_restarts()
     assert(systemd->calls[1] == "restart demo.service");
 }
 
+[[using gentest: test]]
 void test_deployment_rolls_back_when_restart_fails()
 {
     TempDir temp;
@@ -572,6 +588,7 @@ void test_deployment_rolls_back_when_restart_fails()
     assert(contents.str() == old_quadlet.contents);
 }
 
+[[using gentest: test]]
 void test_deployment_rolls_back_when_restart_status_is_unhealthy()
 {
     TempDir temp;
@@ -612,6 +629,7 @@ void test_deployment_rolls_back_when_restart_status_is_unhealthy()
     assert(contents.str() == old_quadlet.contents);
 }
 
+[[using gentest: test]]
 void test_deployment_rejects_unverified_or_unstaged_archive()
 {
     TempDir temp;
@@ -649,6 +667,7 @@ void test_deployment_rejects_unverified_or_unstaged_archive()
     assert(deployed.error().message.find("expected_sha256") != std::string::npos);
 }
 
+[[using gentest: test]]
 void test_deployment_loads_staged_archive_with_custom_runtime_layout()
 {
     TempDir temp;
@@ -717,6 +736,7 @@ void test_deployment_loads_staged_archive_with_custom_runtime_layout()
     assert(requests[1].find("\r\n\r\nfake-tar") != std::string::npos);
 }
 
+[[using gentest: test]]
 void test_podman_client_against_fake_unix_server()
 {
     TempDir temp;
@@ -772,6 +792,7 @@ void test_podman_client_against_fake_unix_server()
     assert(requests[1].find(R"("image":"busybox")") != std::string::npos);
 }
 
+[[using gentest: test]]
 void test_podman_client_load_image_archive()
 {
     TempDir temp;
@@ -808,8 +829,8 @@ void test_podman_client_load_image_archive()
     assert(request.find("Content-Type: application/x-tar") != std::string::npos);
     assert(request.find("\r\n\r\nfake-tar") != std::string::npos);
 }
-}
 
+#ifndef PODMAN_MANAGER_USE_GENTEST
 int main()
 {
     test_container_spec_json();
@@ -829,3 +850,4 @@ int main()
     std::cout << "podman_manager_tests passed\n";
     return 0;
 }
+#endif
