@@ -2,7 +2,7 @@
   "version": 6,
   "cmakeMinimumRequired": {
     "major": 3,
-    "minor": 25,
+    "minor": 31,
     "patch": 0
   },
   "configurePresets": [
@@ -40,14 +40,6 @@
       "inherits": "debug",
       "cacheVariables": {
         "PODMAN_MANAGER_WITH_SDBUS": "OFF"
-      }
-    },
-    {
-      "name": "gentest",
-      "displayName": "Debug With gentest",
-      "inherits": "debug",
-      "cacheVariables": {
-        "PODMAN_MANAGER_USE_GENTEST": "ON"
       }
     },
     {
@@ -97,10 +89,6 @@
       "configurePreset": "nosdbus"
     },
     {
-      "name": "gentest",
-      "configurePreset": "gentest"
-    },
-    {
       "name": "asan",
       "configurePreset": "asan"
     },
@@ -127,13 +115,6 @@
     {
       "name": "nosdbus",
       "configurePreset": "nosdbus",
-      "output": {
-        "outputOnFailure": true
-      }
-    },
-    {
-      "name": "gentest",
-      "configurePreset": "gentest",
       "output": {
         "outputOnFailure": true
       }
@@ -185,23 +166,6 @@
         {
           "type": "test",
           "name": "nosdbus"
-        }
-      ]
-    },
-    {
-      "name": "gentest",
-      "steps": [
-        {
-          "type": "configure",
-          "name": "gentest"
-        },
-        {
-          "type": "build",
-          "name": "gentest"
-        },
-        {
-          "type": "test",
-          "name": "gentest"
         }
       ]
     }

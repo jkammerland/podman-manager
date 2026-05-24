@@ -305,6 +305,7 @@ Result<void> validate_allowed_keys(const ParsedQuadlet& parsed)
           "Environment",
           "ReadOnly",
           "NoNewPrivileges",
+          "Privileged",
           "DropCapability",
           "Network",
           "Volume",

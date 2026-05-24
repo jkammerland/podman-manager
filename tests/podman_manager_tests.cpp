@@ -1,9 +1,7 @@
 #include "podman_manager/podman_manager.hpp"
 
-#ifdef PODMAN_MANAGER_USE_GENTEST
 #include "gentest/attributes.h"
 #include "gentest/runner.h"
-#endif
 
 #include <cassert>
 #include <cerrno>
@@ -192,6 +190,71 @@ public:
     }
 };
 
+class FailingDaemonReloadSystemdController final : public pm::UserSystemdController
+{
+public:
+    mutable std::vector<std::string> calls;
+
+    pm::Result<void> daemon_reload(const pm::PodmanTarget&) const override
+    {
+        calls.push_back("daemon-reload");
+        return std::unexpected(pm::make_error(pm::ErrorKind::systemd, "daemon-reload failed"));
+    }
+
+    pm::Result<pm::UnitOperationResult> start_unit(const pm::PodmanTarget&, std::string_view) const override
+    {
+        return std::unexpected(pm::make_error(pm::ErrorKind::systemd, "start not used"));
+    }
+
+    pm::Result<pm::UnitOperationResult> restart_unit(const pm::PodmanTarget&, std::string_view) const override
+    {
+        return std::unexpected(pm::make_error(pm::ErrorKind::systemd, "restart not used"));
+    }
+
+    pm::Result<pm::UnitOperationResult> stop_unit(const pm::PodmanTarget&, std::string_view) const override
+    {
+        return std::unexpected(pm::make_error(pm::ErrorKind::systemd, "stop not used"));
+    }
+
+    pm::Result<pm::UnitStatus> status(const pm::PodmanTarget&, std::string_view) const override
+    {
+        return std::unexpected(pm::make_error(pm::ErrorKind::systemd, "status not used"));
+    }
+};
+
+class StatusFailingSystemdController final : public pm::UserSystemdController
+{
+public:
+    mutable std::vector<std::string> calls;
+
+    pm::Result<void> daemon_reload(const pm::PodmanTarget&) const override
+    {
+        calls.push_back("daemon-reload");
+        return {};
+    }
+
+    pm::Result<pm::UnitOperationResult> start_unit(const pm::PodmanTarget&, std::string_view) const override
+    {
+        return std::unexpected(pm::make_error(pm::ErrorKind::systemd, "start not used"));
+    }
+
+    pm::Result<pm::UnitOperationResult> restart_unit(const pm::PodmanTarget&, std::string_view) const override
+    {
+        return std::unexpected(pm::make_error(pm::ErrorKind::systemd, "restart not used"));
+    }
+
+    pm::Result<pm::UnitOperationResult> stop_unit(const pm::PodmanTarget&, std::string_view) const override
+    {
+        return std::unexpected(pm::make_error(pm::ErrorKind::systemd, "stop not used"));
+    }
+
+    pm::Result<pm::UnitStatus> status(const pm::PodmanTarget&, std::string_view unit) const override
+    {
+        calls.push_back("status " + std::string{unit});
+        return std::unexpected(pm::make_error(pm::ErrorKind::systemd, "status failed"));
+    }
+};
+
 class TempDir
 {
 public:
@@ -297,6 +360,25 @@ void send_response(int client, int status, std::string body = "OK", std::string 
     const auto response = out.str();
     assert(send(client, response.data(), response.size(), MSG_NOSIGNAL) > 0);
 }
+
+std::string read_file(const std::filesystem::path& path)
+{
+    std::ifstream in{path};
+    std::stringstream contents;
+    contents << in.rdbuf();
+    return contents.str();
+}
+
+pm::DeploymentBundle demo_bundle(uid_t uid = getuid())
+{
+    pm::DeploymentBundle bundle;
+    bundle.target_uid = uid;
+    bundle.service_name = "demo";
+    bundle.revision = "42";
+    bundle.quadlet.file_name = "demo.container";
+    bundle.quadlet.contents = valid_quadlet_contents();
+    return bundle;
+}
 }
 
 [[using gentest: test]]
@@ -375,6 +457,56 @@ void test_socket_validation()
 }
 
 [[using gentest: test]]
+void test_socket_validation_edges()
+{
+    TempDir temp;
+    pm::PodmanTarget target{.uid = getuid(),
+                            .user_name = "self",
+                            .runtime_dir = temp.path(),
+                            .socket_path = {},
+                            .api_version = "5.0.0"};
+    pm::SocketValidationOptions options;
+    options.require_default_path = false;
+    assert(!pm::validate_podman_socket(target, options));
+
+    target.socket_path = temp.path() / "missing.sock";
+    assert(!pm::validate_podman_socket(target, options));
+
+    const auto regular_path = temp.path() / "regular.sock";
+    {
+        std::ofstream out{regular_path};
+        out << "not a socket";
+    }
+    target.socket_path = regular_path;
+    assert(!pm::validate_podman_socket(target, options));
+    options.require_socket = false;
+    assert(pm::validate_podman_socket(target, options));
+
+    UnixListener listener{temp.path() / std::to_string(getuid()) / "podman" / "podman.sock"};
+    target.socket_path = listener.path;
+    options.require_socket = true;
+    target.uid = getuid() + 1;
+    assert(!pm::validate_podman_socket(target, options));
+
+    target.uid = getuid();
+    options.require_default_path = true;
+    pm::RuntimeDirectoryLayout layout;
+    layout.root = temp.path();
+    options.layout = layout;
+    assert(pm::validate_podman_socket(target, options));
+    target.socket_path = temp.path() / "other.sock";
+    assert(!pm::validate_podman_socket(target, options));
+
+    const auto symlink_path = temp.path() / "link.sock";
+    std::filesystem::create_symlink(listener.path.filename(), symlink_path);
+    target.socket_path = symlink_path;
+    options.require_default_path = false;
+    options.require_socket = false;
+    options.reject_symlink = false;
+    assert(pm::validate_podman_socket(target, options));
+}
+
+[[using gentest: test]]
 void test_systemd_args()
 {
     pm::UserSlicePolicy policy{.uid = 1000,
@@ -402,6 +534,50 @@ void test_systemd_args()
     assert((*user_args)[4] == "demo.service");
     assert(!pm::build_systemctl_user_args(target, "restart", "../bad.service"));
     assert(!pm::build_systemctl_user_args(target, "restart", "-demo.service"));
+}
+
+[[using gentest: test]]
+void test_systemd_validation_edges()
+{
+    pm::UserSlicePolicy empty;
+    empty.uid = 1000;
+    assert(!pm::validate_user_slice_policy(empty));
+
+    pm::UserSlicePolicy bad_weight;
+    bad_weight.uid = 1000;
+    bad_weight.cpu_weight = 0;
+    assert(!pm::validate_user_slice_policy(bad_weight));
+    bad_weight.cpu_weight = 10001;
+    assert(!pm::validate_user_slice_policy(bad_weight));
+
+    pm::UserSlicePolicy bad_tasks;
+    bad_tasks.uid = 1000;
+    bad_tasks.tasks_max = 0;
+    assert(!pm::validate_user_slice_policy(bad_tasks));
+
+    pm::UserSlicePolicy bad_control;
+    bad_control.uid = 1000;
+    bad_control.cpu_quota = std::string{"100%\nMemoryMax=1"};
+    assert(!pm::build_systemctl_set_property_args(bad_control));
+
+    assert(pm::validate_systemd_unit_name("demo.service"));
+    assert(pm::validate_systemd_unit_name("demo.socket"));
+    assert(pm::validate_systemd_unit_name("demo.timer"));
+    assert(pm::validate_systemd_unit_name("multi-user.target"));
+    assert(!pm::validate_systemd_unit_name(""));
+    assert(!pm::validate_systemd_unit_name("bad/path.service"));
+    assert(!pm::validate_systemd_unit_name("bad\n.service"));
+
+    pm::PodmanTarget target;
+    target.uid = 1000;
+    assert(!pm::build_systemctl_user_args(target, "restart", "demo.service"));
+    target.user_name = "alice";
+    assert(!pm::build_systemctl_user_args(target, "restart\nbad", "demo.service"));
+
+    pm::SystemctlUserSystemdController dry_run{true};
+    auto started = dry_run.start_unit(target, "demo.service");
+    assert(started);
+    assert(started->final_status.unit == "demo.service");
 }
 
 [[using gentest: test]]
@@ -511,6 +687,132 @@ void test_quadlet_policy_and_install()
 }
 
 [[using gentest: test]]
+void test_quadlet_parser_policy_edges()
+{
+    auto parsed = pm::parse_quadlet("# comment\r\n"
+                                    "[Container]\r\n"
+                                    "Image = busybox\r\n"
+                                    "Label=com.example.podman-manager.managed=true\r\n"
+                                    "; another comment\r\n");
+    assert(parsed);
+    assert(parsed->values("Container", "Image").front() == "busybox");
+
+    assert(!pm::parse_quadlet("Image=busybox\n"));
+    assert(!pm::parse_quadlet("[]\nImage=busybox\n"));
+    assert(!pm::parse_quadlet("[Container]\n=busybox\n"));
+
+    pm::QuadletFile quadlet;
+    quadlet.file_name = "demo.container";
+    quadlet.contents = valid_quadlet_contents();
+    quadlet.contents.push_back('\0');
+    assert(!pm::validate_quadlet_policy(quadlet));
+
+    quadlet.contents = "[Container]\nImage=busybox\n"
+                       "Label=com.example.podman-manager.managed=true\n"
+                       "\n[Timer]\nOnBootSec=1\n";
+    assert(!pm::validate_quadlet_policy(quadlet));
+
+    quadlet.contents = "[Container]\nImage=busybox\n"
+                       "Label=com.example.podman-manager.managed=true\n"
+                       "EnvironmentFile=/tmp/secrets\n";
+    assert(!pm::validate_quadlet_policy(quadlet));
+
+    quadlet.contents = "[Container]\nImage=busybox\n"
+                       "Label=com.example.podman-manager.managed=true\n"
+                       "PodmanArgs=--log-driver journald --pull never\n";
+    pm::QuadletPolicy podman_args_policy;
+    podman_args_policy.allow_podman_args = true;
+    assert(pm::validate_quadlet_policy(quadlet, podman_args_policy));
+
+    const std::vector<std::string> denied_args{
+        "--net=host",
+        "--pid host",
+        "--userns \"host\"",
+        "--device=/dev/fuse",
+        "-v /:/host",
+    };
+    for (const auto& denied : denied_args)
+    {
+        quadlet.contents = "[Container]\nImage=busybox\n"
+                           "Label=com.example.podman-manager.managed=true\n"
+                           "PodmanArgs=" +
+                           denied + "\n";
+        assert(!pm::validate_quadlet_policy(quadlet, podman_args_policy));
+    }
+
+    quadlet.contents = "[Container]\nImage=busybox\n"
+                       "Label=com.example.podman-manager.managed=true\n"
+                       "Privileged=true\n"
+                       "Network=host\n"
+                       "PID=host\n"
+                       "IPCHost=true\n"
+                       "UserNS=host\n"
+                       "Device=/dev/fuse\n"
+                       "Volume=/tmp:/host:ro\n"
+                       "Mount=type=bind,source=/tmp,target=/host\n"
+                       "Rootfs=/tmp/rootfs\n";
+    pm::QuadletPolicy permissive;
+    permissive.allow_privileged = true;
+    permissive.allow_host_network = true;
+    permissive.allow_host_pid = true;
+    permissive.allow_host_ipc = true;
+    permissive.allow_host_userns = true;
+    permissive.allow_devices = true;
+    permissive.allow_root_mount = true;
+    assert(pm::validate_quadlet_policy(quadlet, permissive));
+}
+
+[[using gentest: test]]
+void test_quadlet_installer_snapshot_restore_edges()
+{
+    TempDir temp;
+    pm::QuadletInstallLayout layout;
+    layout.admin_user_root = temp.path();
+    layout.required_owner_uid = getuid();
+    pm::QuadletInstaller installer{layout};
+
+    pm::QuadletFile quadlet;
+    quadlet.file_name = "demo.container";
+    quadlet.contents = valid_quadlet_contents();
+    auto installed = installer.install_for_user(getuid(), quadlet);
+    assert(installed);
+
+    auto snapshot = installer.snapshot_for_user(getuid(), quadlet.file_name);
+    assert(snapshot);
+    assert(snapshot->existed);
+    assert(snapshot->contents == quadlet.contents);
+
+    pm::QuadletFile changed = quadlet;
+    changed.contents = "[Container]\nImage=busybox:changed\n"
+                       "Label=com.example.podman-manager.managed=true\n";
+    assert(installer.install_for_user(getuid(), changed));
+    assert(installer.restore_for_user(getuid(), *snapshot));
+    assert(read_file(installed->path) == quadlet.contents);
+
+    auto bad_snapshot = *snapshot;
+    bad_snapshot.path = temp.path() / "elsewhere.container";
+    assert(!installer.restore_for_user(getuid(), bad_snapshot));
+
+    auto absent = installer.snapshot_for_user(getuid(), "absent.container");
+    assert(absent);
+    assert(!absent->existed);
+    pm::QuadletFile temporary = quadlet;
+    temporary.file_name = "absent.container";
+    assert(installer.install_for_user(getuid(), temporary));
+    assert(std::filesystem::exists(layout.quadlet_path(getuid(), temporary.file_name)));
+    assert(installer.restore_for_user(getuid(), *absent));
+    assert(!std::filesystem::exists(layout.quadlet_path(getuid(), temporary.file_name)));
+
+    assert(installer.remove_for_user(getuid(), quadlet.file_name));
+    assert(!std::filesystem::exists(installed->path));
+    assert(installer.remove_for_user(getuid(), quadlet.file_name));
+
+    const auto symlink_path = layout.quadlet_path(getuid(), "link.container");
+    std::filesystem::create_symlink("demo.container", symlink_path);
+    assert(!installer.snapshot_for_user(getuid(), "link.container"));
+}
+
+[[using gentest: test]]
 void test_deployment_orchestrator_installs_and_restarts()
 {
     TempDir temp;
@@ -542,6 +844,163 @@ void test_deployment_orchestrator_installs_and_restarts()
     assert(systemd->calls.size() == 2);
     assert(systemd->calls[0] == "daemon-reload");
     assert(systemd->calls[1] == "restart demo.service");
+}
+
+[[using gentest: test]]
+void test_deployment_bundle_validation_edges()
+{
+    auto bundle = demo_bundle(0);
+    assert(!pm::validate_deployment_bundle(bundle));
+
+    bundle = demo_bundle();
+    bundle.service_name.clear();
+    assert(!pm::validate_deployment_bundle(bundle));
+
+    bundle = demo_bundle();
+    bundle.service_name = "other";
+    assert(!pm::validate_deployment_bundle(bundle));
+
+    bundle = demo_bundle();
+    bundle.image_archive = pm::ImageArchive{};
+    assert(!pm::validate_deployment_bundle(bundle));
+}
+
+[[using gentest: test]]
+void test_deployment_dry_run_has_no_side_effects()
+{
+    TempDir temp;
+
+    pm::QuadletInstallLayout layout;
+    layout.admin_user_root = temp.path() / "quadlets";
+    layout.required_owner_uid = getuid();
+
+    auto systemd = std::make_shared<FakeSystemdController>();
+    pm::DeploymentOptions options;
+    options.dry_run = true;
+
+    pm::DeploymentOrchestrator orchestrator{pm::QuadletInstaller{layout}, systemd, options};
+    auto deployed = orchestrator.deploy(demo_bundle());
+    assert(deployed);
+    assert(deployed->dry_run);
+    assert(deployed->installed_quadlet_path == layout.quadlet_path(getuid(), "demo.container"));
+    assert(systemd->calls.empty());
+    assert(!std::filesystem::exists(layout.admin_user_root));
+}
+
+[[using gentest: test]]
+void test_deployment_restart_disabled_records_status_error()
+{
+    TempDir temp;
+
+    pm::QuadletInstallLayout layout;
+    layout.admin_user_root = temp.path();
+    layout.required_owner_uid = getuid();
+
+    auto systemd = std::make_shared<StatusFailingSystemdController>();
+    pm::DeploymentOptions options;
+    options.validate_socket = false;
+    options.load_image_archive = false;
+    options.restart_unit = false;
+
+    pm::DeploymentOrchestrator orchestrator{pm::QuadletInstaller{layout}, systemd, options};
+    auto deployed = orchestrator.deploy(demo_bundle());
+    assert(deployed);
+    assert(!deployed->job_path);
+    assert(!deployed->status);
+    assert(deployed->status_error);
+    assert(deployed->status_error->find("status failed") != std::string::npos);
+    assert(systemd->calls.size() == 2);
+    assert(systemd->calls[0] == "daemon-reload");
+    assert(systemd->calls[1] == "status demo.service");
+    assert(std::filesystem::exists(layout.quadlet_path(getuid(), "demo.container")));
+}
+
+[[using gentest: test]]
+void test_deployment_daemon_reload_failure_rolls_back_new_install()
+{
+    TempDir temp;
+
+    pm::QuadletInstallLayout layout;
+    layout.admin_user_root = temp.path();
+    layout.required_owner_uid = getuid();
+
+    auto systemd = std::make_shared<FailingDaemonReloadSystemdController>();
+    pm::DeploymentOptions options;
+    options.validate_socket = false;
+    options.load_image_archive = false;
+
+    pm::DeploymentOrchestrator orchestrator{pm::QuadletInstaller{layout}, systemd, options};
+    auto deployed = orchestrator.deploy(demo_bundle());
+    assert(!deployed);
+    assert(deployed.error().message.find("daemon-reload failed") != std::string::npos);
+    assert(deployed.error().message.find("rolled back") != std::string::npos);
+    assert(deployed.error().message.find("rollback daemon-reload failed") != std::string::npos);
+    assert(systemd->calls.size() == 2);
+    assert(!std::filesystem::exists(layout.quadlet_path(getuid(), "demo.container")));
+}
+
+[[using gentest: test]]
+void test_deployment_archive_path_hardening()
+{
+    TempDir temp;
+    const auto staging_root = temp.path() / "staging";
+    std::filesystem::create_directories(staging_root / "images");
+    const auto archive = staging_root / "images" / "demo.oci.tar";
+    {
+        std::ofstream out{archive, std::ios::binary};
+        out << "fake-tar";
+    }
+    const auto outside = temp.path() / "outside.oci.tar";
+    {
+        std::ofstream out{outside, std::ios::binary};
+        out << "fake-tar";
+    }
+    std::filesystem::create_symlink("demo.oci.tar", staging_root / "images" / "link.oci.tar");
+
+    pm::QuadletInstallLayout layout;
+    layout.admin_user_root = temp.path() / "quadlets";
+    layout.required_owner_uid = getuid();
+
+    auto systemd = std::make_shared<FakeSystemdController>();
+    pm::DeploymentOptions options;
+    options.validate_socket = false;
+    options.image_archive_root = staging_root;
+
+    auto deploy_with_archive = [&](std::filesystem::path image_path,
+                                   std::optional<uintmax_t> max_size = std::nullopt) {
+        auto bundle = demo_bundle();
+        bundle.image_archive = pm::ImageArchive{.path = std::move(image_path), .expected_sha256 = ""};
+        auto local_options = options;
+        if (max_size)
+        {
+            local_options.max_image_archive_bytes = *max_size;
+        }
+        pm::DeploymentOrchestrator orchestrator{pm::QuadletInstaller{layout}, systemd, local_options};
+        return orchestrator.deploy(bundle);
+    };
+
+    auto outside_result = deploy_with_archive(outside);
+    assert(!outside_result);
+    assert(outside_result.error().message.find("outside configured staging root") != std::string::npos);
+
+    auto dotdot_result = deploy_with_archive("../demo.oci.tar");
+    assert(!dotdot_result);
+    assert(dotdot_result.error().message.find("must not contain") != std::string::npos);
+
+    auto directory_result = deploy_with_archive("images");
+    assert(!directory_result);
+    assert(directory_result.error().message.find("regular file") != std::string::npos);
+
+    auto symlink_result = deploy_with_archive("images/link.oci.tar");
+    assert(!symlink_result);
+    assert(symlink_result.error().kind == pm::ErrorKind::filesystem);
+
+    auto too_large_result = deploy_with_archive("images/demo.oci.tar", 1);
+    assert(!too_large_result);
+    assert(too_large_result.error().message.find("too large") != std::string::npos);
+
+    assert(systemd->calls.empty());
+    assert(!std::filesystem::exists(layout.quadlet_path(getuid(), "demo.container")));
 }
 
 [[using gentest: test]]
@@ -829,25 +1288,3 @@ void test_podman_client_load_image_archive()
     assert(request.find("Content-Type: application/x-tar") != std::string::npos);
     assert(request.find("\r\n\r\nfake-tar") != std::string::npos);
 }
-
-#ifndef PODMAN_MANAGER_USE_GENTEST
-int main()
-{
-    test_container_spec_json();
-    test_container_spec_validation_edges();
-    test_url_codec();
-    test_socket_validation();
-    test_systemd_args();
-    test_quadlet_policy_and_install();
-    test_deployment_orchestrator_installs_and_restarts();
-    test_deployment_rolls_back_when_restart_fails();
-    test_deployment_rolls_back_when_restart_status_is_unhealthy();
-    test_deployment_rejects_unverified_or_unstaged_archive();
-    test_deployment_loads_staged_archive_with_custom_runtime_layout();
-    test_podman_client_against_fake_unix_server();
-    test_podman_client_load_image_archive();
-
-    std::cout << "podman_manager_tests passed\n";
-    return 0;
-}
-#endif
