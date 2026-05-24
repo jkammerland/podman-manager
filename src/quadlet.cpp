@@ -6,6 +6,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <optional>
+#include <set>
 #include <ranges>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -119,6 +120,11 @@ bool starts_with_token(std::string_view value, std::string_view token)
     return value.size() == token.size() || value[token.size()] == '=' || value[token.size()] == ' ';
 }
 
+bool equals_key(std::string_view value, std::string_view expected)
+{
+    return lower_ascii(trim(value)) == lower_ascii(expected);
+}
+
 bool denied_podman_arg(std::string_view value, const QuadletPolicy& policy)
 {
     auto parts = std::views::split(value, ' ');
@@ -130,6 +136,10 @@ bool denied_podman_arg(std::string_view value, const QuadletPolicy& policy)
             continue;
         }
         if (!policy.allow_privileged && part == "--privileged")
+        {
+            return true;
+        }
+        if (!policy.allow_privileged && starts_with_token(part, "--privileged=true"))
         {
             return true;
         }
@@ -154,17 +164,94 @@ bool denied_podman_arg(std::string_view value, const QuadletPolicy& policy)
         {
             return true;
         }
+        if (!policy.allow_root_mount &&
+            (starts_with_token(part, "--volume") || starts_with_token(part, "-v") ||
+             starts_with_token(part, "--mount")))
+        {
+            return true;
+        }
     }
     return false;
 }
 
-bool root_mount(std::string_view value)
+bool host_path_volume(std::string_view value)
 {
     const auto trimmed = trim(value);
-    return trimmed == "/" || trimmed.starts_with("/:") || trimmed.starts_with("/:/");
+    return trimmed.starts_with("/");
 }
 
-Result<void> ensure_regular_admin_dir(const std::filesystem::path& dir)
+bool host_path_mount(std::string_view value)
+{
+    const auto normalized = lower_ascii(trim(value));
+    return normalized.find("source=/") != std::string::npos ||
+           normalized.find("src=/") != std::string::npos ||
+           normalized.find("from=/") != std::string::npos;
+}
+
+bool dangerous_service_key(std::string_view key)
+{
+    return key.starts_with("Exec") || key == "EnvironmentFile" ||
+           key == "LoadCredential" || key == "SetCredential" ||
+           key == "RootDirectory" || key == "RootImage" ||
+           key == "BindPaths" || key == "BindReadOnlyPaths" ||
+           key == "WorkingDirectory" || key == "User" || key == "Group";
+}
+
+Result<void> validate_allowed_keys(const ParsedQuadlet& parsed)
+{
+    static const std::map<std::string, std::set<std::string>> allowed = {
+        {"Unit", {"Description", "After", "Wants", "Requires", "Documentation"}},
+        {"Container",
+         {"Image",
+          "ContainerName",
+          "Label",
+          "Environment",
+          "ReadOnly",
+          "NoNewPrivileges",
+          "DropCapability",
+          "Network",
+          "Volume",
+          "Mount",
+          "UserNS",
+          "PID",
+          "IPCHost",
+          "Device",
+          "AddDevice",
+          "Rootfs",
+          "PodmanArgs"}},
+        {"Service", {"Restart", "TimeoutStartSec", "TimeoutStopSec"}},
+        {"Install", {"WantedBy"}},
+    };
+
+    for (const auto& [section, entries] : parsed.sections())
+    {
+        const auto section_it = allowed.find(section);
+        if (section_it == allowed.end())
+        {
+            return std::unexpected(make_error(ErrorKind::policy,
+                                              "unsupported Quadlet section: " + section));
+        }
+        for (const auto& [key, values] : entries)
+        {
+            (void)values;
+            if (dangerous_service_key(key))
+            {
+                return std::unexpected(make_error(ErrorKind::policy,
+                                                  "unsupported host-executing service key: " + section + "." + key));
+            }
+            if (!section_it->second.contains(key))
+            {
+                return std::unexpected(make_error(ErrorKind::policy,
+                                                  "unsupported Quadlet key: " + section + "." + key));
+            }
+        }
+    }
+
+    return {};
+}
+
+Result<void> ensure_directory_safe(const std::filesystem::path& dir,
+                                   const QuadletInstallLayout& layout)
 {
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
@@ -191,7 +278,51 @@ Result<void> ensure_regular_admin_dir(const std::filesystem::path& dir)
         return std::unexpected(make_error(ErrorKind::filesystem,
                                           "Quadlet directory is not a real directory: " + dir.string()));
     }
+    if (layout.required_owner_uid && st.st_uid != *layout.required_owner_uid)
+    {
+        return std::unexpected(make_error(ErrorKind::filesystem,
+                                          "Quadlet directory owner uid " + std::to_string(st.st_uid) +
+                                              " does not match required uid " +
+                                              std::to_string(*layout.required_owner_uid)));
+    }
+    if (layout.required_owner_gid && st.st_gid != *layout.required_owner_gid)
+    {
+        return std::unexpected(make_error(ErrorKind::filesystem,
+                                          "Quadlet directory owner gid " + std::to_string(st.st_gid) +
+                                              " does not match required gid " +
+                                              std::to_string(*layout.required_owner_gid)));
+    }
+    if (chmod(dir.c_str(), 0755) != 0)
+    {
+        return std::unexpected(make_error(ErrorKind::filesystem,
+                                          "failed to chmod Quadlet directory '" + dir.string() + "': " +
+                                              std::strerror(errno),
+                                          0,
+                                          errno));
+    }
+    if (lstat(dir.c_str(), &st) != 0)
+    {
+        return std::unexpected(make_error(ErrorKind::filesystem,
+                                          "failed to restat Quadlet directory '" + dir.string() + "': " +
+                                              std::strerror(errno),
+                                          0,
+                                          errno));
+    }
+    if ((st.st_mode & 0022) != 0)
+    {
+        return std::unexpected(make_error(ErrorKind::filesystem,
+                                          "Quadlet directory must not be group/other writable: " + dir.string()));
+    }
     return {};
+}
+
+Result<void> ensure_admin_tree(uid_t uid, const QuadletInstallLayout& layout)
+{
+    if (auto result = ensure_directory_safe(layout.admin_user_root, layout); !result)
+    {
+        return result;
+    }
+    return ensure_directory_safe(layout.user_directory(uid), layout);
 }
 
 Result<void> write_all(int fd, std::string_view contents)
@@ -215,18 +346,9 @@ Result<void> write_all(int fd, std::string_view contents)
     return {};
 }
 
-Result<void> fsync_directory(const std::filesystem::path& dir)
+Result<void> fsync_directory(int dir_fd)
 {
-    FileDescriptor fd{open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC)};
-    if (fd.get() < 0)
-    {
-        return std::unexpected(make_error(ErrorKind::filesystem,
-                                          "failed to open Quadlet directory for fsync: " +
-                                              std::string{std::strerror(errno)},
-                                          0,
-                                          errno));
-    }
-    if (fsync(fd.get()) != 0)
+    if (fsync(dir_fd) != 0)
     {
         return std::unexpected(make_error(ErrorKind::filesystem,
                                           "failed to fsync Quadlet directory: " +
@@ -242,27 +364,56 @@ Result<void> atomic_write_file(const std::filesystem::path& final_path,
                                mode_t mode)
 {
     const auto dir = final_path.parent_path();
-    const auto tmp_path = dir / ("." + final_path.filename().string() + ".tmp");
-
-    FileDescriptor fd{open(tmp_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, mode)};
-    if (fd.get() < 0)
+    const auto final_name = final_path.filename().string();
+    FileDescriptor dir_fd{open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)};
+    if (dir_fd.get() < 0)
     {
         return std::unexpected(make_error(ErrorKind::filesystem,
-                                          "failed to open temporary Quadlet file '" + tmp_path.string() + "': " +
+                                          "failed to open Quadlet directory '" + dir.string() + "': " +
                                               std::strerror(errno),
                                           0,
                                           errno));
     }
 
+    std::optional<std::string> tmp_name;
+    FileDescriptor fd;
+    for (int attempt = 0; attempt < 100; ++attempt)
+    {
+        const auto candidate = "." + final_name + ".tmp." + std::to_string(getpid()) + "." +
+                               std::to_string(attempt);
+        fd.reset(openat(dir_fd.get(),
+                        candidate.c_str(),
+                        O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+                        mode));
+        if (fd.get() >= 0)
+        {
+            tmp_name = candidate;
+            break;
+        }
+        if (errno != EEXIST)
+        {
+            return std::unexpected(make_error(ErrorKind::filesystem,
+                                              "failed to open temporary Quadlet file in '" + dir.string() + "': " +
+                                                  std::strerror(errno),
+                                              0,
+                                              errno));
+        }
+    }
+    if (!tmp_name)
+    {
+        return std::unexpected(make_error(ErrorKind::filesystem,
+                                          "failed to allocate unique temporary Quadlet file name"));
+    }
+
     if (auto result = write_all(fd.get(), contents); !result)
     {
-        std::filesystem::remove(tmp_path);
+        unlinkat(dir_fd.get(), tmp_name->c_str(), 0);
         return result;
     }
 
     if (fsync(fd.get()) != 0)
     {
-        std::filesystem::remove(tmp_path);
+        unlinkat(dir_fd.get(), tmp_name->c_str(), 0);
         return std::unexpected(make_error(ErrorKind::filesystem,
                                           "failed to fsync temporary Quadlet file: " +
                                               std::string{std::strerror(errno)},
@@ -271,9 +422,9 @@ Result<void> atomic_write_file(const std::filesystem::path& final_path,
     }
 
     fd.reset();
-    if (rename(tmp_path.c_str(), final_path.c_str()) != 0)
+    if (renameat(dir_fd.get(), tmp_name->c_str(), dir_fd.get(), final_name.c_str()) != 0)
     {
-        std::filesystem::remove(tmp_path);
+        unlinkat(dir_fd.get(), tmp_name->c_str(), 0);
         return std::unexpected(make_error(ErrorKind::filesystem,
                                           "failed to install Quadlet file '" + final_path.string() + "': " +
                                               std::strerror(errno),
@@ -281,22 +432,120 @@ Result<void> atomic_write_file(const std::filesystem::path& final_path,
                                           errno));
     }
 
-    return fsync_directory(dir);
+    return fsync_directory(dir_fd.get());
 }
 
-bool has_managed_label(const ParsedQuadlet& parsed, const QuadletPolicy& policy)
+Result<std::string> read_regular_file_no_symlink(const std::filesystem::path& path, size_t max_size)
 {
+    FileDescriptor fd{open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW)};
+    if (fd.get() < 0)
+    {
+        return std::unexpected(make_error(ErrorKind::filesystem,
+                                          "failed to open Quadlet file '" + path.string() + "': " +
+                                              std::strerror(errno),
+                                          0,
+                                          errno));
+    }
+
+    struct stat st
+    {
+    };
+    if (fstat(fd.get(), &st) != 0)
+    {
+        return std::unexpected(make_error(ErrorKind::filesystem,
+                                          "failed to stat Quadlet file '" + path.string() + "': " +
+                                              std::strerror(errno),
+                                          0,
+                                          errno));
+    }
+    if (!S_ISREG(st.st_mode))
+    {
+        return std::unexpected(make_error(ErrorKind::filesystem,
+                                          "Quadlet path is not a regular file: " + path.string()));
+    }
+    if (st.st_size < 0 || static_cast<uintmax_t>(st.st_size) > max_size)
+    {
+        return std::unexpected(make_error(ErrorKind::filesystem,
+                                          "Quadlet file is too large: " + path.string()));
+    }
+
+    std::string out(static_cast<size_t>(st.st_size), '\0');
+    size_t offset = 0;
+    while (offset < out.size())
+    {
+        const auto n = read(fd.get(), out.data() + offset, out.size() - offset);
+        if (n < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            return std::unexpected(make_error(ErrorKind::filesystem,
+                                              "failed to read Quadlet file '" + path.string() + "': " +
+                                                  std::strerror(errno),
+                                              0,
+                                              errno));
+        }
+        if (n == 0)
+        {
+            return std::unexpected(make_error(ErrorKind::filesystem,
+                                              "Quadlet file changed while reading: " + path.string()));
+        }
+        offset += static_cast<size_t>(n);
+    }
+    return out;
+}
+
+Result<void> unlink_quadlet_file(const std::filesystem::path& path)
+{
+    const auto dir = path.parent_path();
+    const auto file_name = path.filename().string();
+    FileDescriptor dir_fd{open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)};
+    if (dir_fd.get() < 0)
+    {
+        return std::unexpected(make_error(ErrorKind::filesystem,
+                                          "failed to open Quadlet directory for remove: " +
+                                              std::string{std::strerror(errno)},
+                                          0,
+                                          errno));
+    }
+    if (unlinkat(dir_fd.get(), file_name.c_str(), 0) != 0 && errno != ENOENT)
+    {
+        return std::unexpected(make_error(ErrorKind::filesystem,
+                                          "failed to remove Quadlet file '" + path.string() + "': " +
+                                              std::strerror(errno),
+                                          0,
+                                          errno));
+    }
+    return fsync_directory(dir_fd.get());
+}
+
+Result<void> validate_managed_label(const ParsedQuadlet& parsed, const QuadletPolicy& policy)
+{
+    size_t matches = 0;
+    size_t managed_labels = 0;
     for (const auto& label : parsed.values("Container", "Label"))
     {
         const auto eq = label.find('=');
         const auto key = trim(eq == std::string::npos ? label : std::string_view{label}.substr(0, eq));
         const auto value = trim(eq == std::string::npos ? "" : std::string_view{label}.substr(eq + 1));
-        if (key == policy.managed_label_key && value == policy.managed_label_value)
+        if (key == policy.managed_label_key)
         {
-            return true;
+            ++managed_labels;
+            if (value == policy.managed_label_value)
+            {
+                ++matches;
+            }
         }
     }
-    return false;
+    if (managed_labels != 1 || matches != 1)
+    {
+        return std::unexpected(make_error(ErrorKind::policy,
+                                          "Quadlet must carry exactly one managed Label=" +
+                                              policy.managed_label_key + "=" +
+                                              policy.managed_label_value));
+    }
+    return {};
 }
 }
 
@@ -328,6 +577,11 @@ std::vector<std::string> ParsedQuadlet::values(std::string_view section, std::st
         return {};
     }
     return key_it->second;
+}
+
+const std::map<std::string, ParsedQuadlet::Section>& ParsedQuadlet::sections() const noexcept
+{
+    return sections_;
 }
 
 void ParsedQuadlet::add(std::string section, std::string key, std::string value)
@@ -466,12 +720,16 @@ Result<void> validate_quadlet_policy(const QuadletFile& quadlet, const QuadletPo
         return std::unexpected(make_error(ErrorKind::policy,
                                           "Quadlet [Container] section must contain Image="));
     }
-    if (policy.require_managed_label && !has_managed_label(*parsed, policy))
+    if (auto result = validate_allowed_keys(*parsed); !result)
     {
-        return std::unexpected(make_error(ErrorKind::policy,
-                                          "Quadlet must carry managed Label=" +
-                                              policy.managed_label_key + "=" +
-                                              policy.managed_label_value));
+        return std::unexpected(result.error());
+    }
+    if (policy.require_managed_label)
+    {
+        if (auto result = validate_managed_label(*parsed, policy); !result)
+        {
+            return std::unexpected(result.error());
+        }
     }
 
     for (const auto& value : parsed->values("Container", "Privileged"))
@@ -484,7 +742,7 @@ Result<void> validate_quadlet_policy(const QuadletFile& quadlet, const QuadletPo
     }
     for (const auto& value : parsed->values("Container", "Network"))
     {
-        if (!policy.allow_host_network && lower_ascii(trim(value)) == "host")
+        if (!policy.allow_host_network && equals_key(value, "host"))
         {
             return std::unexpected(make_error(ErrorKind::policy,
                                               "Quadlet Network=host is not allowed"));
@@ -492,7 +750,7 @@ Result<void> validate_quadlet_policy(const QuadletFile& quadlet, const QuadletPo
     }
     for (const auto& value : parsed->values("Container", "PID"))
     {
-        if (!policy.allow_host_pid && lower_ascii(trim(value)) == "host")
+        if (!policy.allow_host_pid && equals_key(value, "host"))
         {
             return std::unexpected(make_error(ErrorKind::policy,
                                               "Quadlet PID=host is not allowed"));
@@ -508,7 +766,7 @@ Result<void> validate_quadlet_policy(const QuadletFile& quadlet, const QuadletPo
     }
     for (const auto& value : parsed->values("Container", "UserNS"))
     {
-        if (!policy.allow_host_userns && lower_ascii(trim(value)) == "host")
+        if (!policy.allow_host_userns && equals_key(value, "host"))
         {
             return std::unexpected(make_error(ErrorKind::policy,
                                               "Quadlet UserNS=host is not allowed"));
@@ -522,16 +780,45 @@ Result<void> validate_quadlet_policy(const QuadletFile& quadlet, const QuadletPo
                                               "Quadlet Device= is not allowed by default"));
         }
     }
-    for (const auto& value : parsed->values("Container", "Volume"))
+    for (const auto& value : parsed->values("Container", "AddDevice"))
     {
-        if (!policy.allow_root_mount && root_mount(value))
+        if (!policy.allow_devices && !trim(value).empty())
         {
             return std::unexpected(make_error(ErrorKind::policy,
-                                              "Quadlet root filesystem bind mounts are not allowed"));
+                                              "Quadlet AddDevice= is not allowed by default"));
+        }
+    }
+    for (const auto& value : parsed->values("Container", "Volume"))
+    {
+        if (!policy.allow_root_mount && host_path_volume(value))
+        {
+            return std::unexpected(make_error(ErrorKind::policy,
+                                              "Quadlet host path Volume= mounts are not allowed"));
+        }
+    }
+    for (const auto& value : parsed->values("Container", "Mount"))
+    {
+        if (!policy.allow_root_mount && host_path_mount(value))
+        {
+            return std::unexpected(make_error(ErrorKind::policy,
+                                              "Quadlet host path Mount= mounts are not allowed"));
+        }
+    }
+    for (const auto& value : parsed->values("Container", "Rootfs"))
+    {
+        if (!policy.allow_root_mount && !trim(value).empty())
+        {
+            return std::unexpected(make_error(ErrorKind::policy,
+                                              "Quadlet Rootfs= is not allowed by default"));
         }
     }
     for (const auto& value : parsed->values("Container", "PodmanArgs"))
     {
+        if (!policy.allow_podman_args)
+        {
+            return std::unexpected(make_error(ErrorKind::policy,
+                                              "Quadlet PodmanArgs= is not allowed by default"));
+        }
         if (denied_podman_arg(value, policy))
         {
             return std::unexpected(make_error(ErrorKind::policy,
@@ -575,6 +862,84 @@ Result<InstalledQuadlet> QuadletInstaller::expected_install(uid_t uid, const Qua
     };
 }
 
+Result<QuadletSnapshot> QuadletInstaller::snapshot_for_user(uid_t uid, std::string_view file_name) const
+{
+    if (auto result = validate_quadlet_file_name(file_name); !result)
+    {
+        return std::unexpected(result.error());
+    }
+    if (auto result = ensure_admin_tree(uid, layout_); !result)
+    {
+        return std::unexpected(result.error());
+    }
+
+    QuadletSnapshot snapshot;
+    snapshot.file_name = std::string{file_name};
+    snapshot.path = layout_.quadlet_path(uid, file_name);
+
+    struct stat st
+    {
+    };
+    if (lstat(snapshot.path.c_str(), &st) != 0)
+    {
+        if (errno == ENOENT)
+        {
+            snapshot.existed = false;
+            return snapshot;
+        }
+        return std::unexpected(make_error(ErrorKind::filesystem,
+                                          "failed to stat Quadlet snapshot path '" + snapshot.path.string() + "': " +
+                                              std::strerror(errno),
+                                          0,
+                                          errno));
+    }
+
+    snapshot.existed = true;
+    auto contents = read_regular_file_no_symlink(snapshot.path, layout_.max_quadlet_bytes);
+    if (!contents)
+    {
+        return std::unexpected(contents.error());
+    }
+    snapshot.contents = *std::move(contents);
+    return snapshot;
+}
+
+Result<void> QuadletInstaller::restore_for_user(uid_t uid, const QuadletSnapshot& snapshot) const
+{
+    if (auto result = validate_quadlet_file_name(snapshot.file_name); !result)
+    {
+        return result;
+    }
+    if (auto result = ensure_admin_tree(uid, layout_); !result)
+    {
+        return result;
+    }
+    const auto path = layout_.quadlet_path(uid, snapshot.file_name);
+    if (path != snapshot.path)
+    {
+        return std::unexpected(make_error(ErrorKind::filesystem,
+                                          "Quadlet snapshot path does not match installer layout"));
+    }
+    if (!snapshot.existed)
+    {
+        return unlink_quadlet_file(path);
+    }
+    return atomic_write_file(path, snapshot.contents, 0644);
+}
+
+Result<void> QuadletInstaller::remove_for_user(uid_t uid, std::string_view file_name) const
+{
+    if (auto result = validate_quadlet_file_name(file_name); !result)
+    {
+        return result;
+    }
+    if (auto result = ensure_admin_tree(uid, layout_); !result)
+    {
+        return result;
+    }
+    return unlink_quadlet_file(layout_.quadlet_path(uid, file_name));
+}
+
 Result<InstalledQuadlet> QuadletInstaller::install_for_user(uid_t uid, const QuadletFile& quadlet) const
 {
     auto expected = expected_install(uid, quadlet);
@@ -584,7 +949,7 @@ Result<InstalledQuadlet> QuadletInstaller::install_for_user(uid_t uid, const Qua
     }
 
     const auto dir = layout_.user_directory(uid);
-    if (auto result = ensure_regular_admin_dir(dir); !result)
+    if (auto result = ensure_admin_tree(uid, layout_); !result)
     {
         return std::unexpected(result.error());
     }

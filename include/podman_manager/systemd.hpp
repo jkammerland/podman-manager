@@ -4,7 +4,9 @@
 #include "podman_manager/target.hpp"
 
 #include <cstdint>
+#include <chrono>
 #include <optional>
+#include <memory>
 #include <string>
 #include <sys/types.h>
 #include <vector>
@@ -32,18 +34,24 @@ struct UnitStatus
     std::string sub_state;
 };
 
+struct UnitOperationResult
+{
+    std::optional<std::string> job_path;
+    UnitStatus final_status;
+};
+
 class UserSystemdController
 {
 public:
     virtual ~UserSystemdController() = default;
 
     virtual Result<void> daemon_reload(const PodmanTarget& target) const = 0;
-    virtual Result<std::string> start_unit(const PodmanTarget& target,
-                                           std::string_view unit) const = 0;
-    virtual Result<std::string> restart_unit(const PodmanTarget& target,
-                                             std::string_view unit) const = 0;
-    virtual Result<std::string> stop_unit(const PodmanTarget& target,
-                                          std::string_view unit) const = 0;
+    virtual Result<UnitOperationResult> start_unit(const PodmanTarget& target,
+                                                   std::string_view unit) const = 0;
+    virtual Result<UnitOperationResult> restart_unit(const PodmanTarget& target,
+                                                     std::string_view unit) const = 0;
+    virtual Result<UnitOperationResult> stop_unit(const PodmanTarget& target,
+                                                  std::string_view unit) const = 0;
     virtual Result<UnitStatus> status(const PodmanTarget& target,
                                       std::string_view unit) const = 0;
 };
@@ -73,12 +81,12 @@ public:
     [[nodiscard]] bool dry_run() const noexcept;
 
     Result<void> daemon_reload(const PodmanTarget& target) const override;
-    Result<std::string> start_unit(const PodmanTarget& target,
-                                   std::string_view unit) const override;
-    Result<std::string> restart_unit(const PodmanTarget& target,
-                                     std::string_view unit) const override;
-    Result<std::string> stop_unit(const PodmanTarget& target,
-                                  std::string_view unit) const override;
+    Result<UnitOperationResult> start_unit(const PodmanTarget& target,
+                                           std::string_view unit) const override;
+    Result<UnitOperationResult> restart_unit(const PodmanTarget& target,
+                                             std::string_view unit) const override;
+    Result<UnitOperationResult> stop_unit(const PodmanTarget& target,
+                                          std::string_view unit) const override;
     Result<UnitStatus> status(const PodmanTarget& target,
                               std::string_view unit) const override;
 
@@ -90,15 +98,20 @@ private:
 class SdbusUserSystemdController final : public UserSystemdController
 {
 public:
+    explicit SdbusUserSystemdController(std::chrono::milliseconds job_timeout = std::chrono::seconds{30});
+
     Result<void> daemon_reload(const PodmanTarget& target) const override;
-    Result<std::string> start_unit(const PodmanTarget& target,
-                                   std::string_view unit) const override;
-    Result<std::string> restart_unit(const PodmanTarget& target,
-                                     std::string_view unit) const override;
-    Result<std::string> stop_unit(const PodmanTarget& target,
-                                  std::string_view unit) const override;
+    Result<UnitOperationResult> start_unit(const PodmanTarget& target,
+                                           std::string_view unit) const override;
+    Result<UnitOperationResult> restart_unit(const PodmanTarget& target,
+                                             std::string_view unit) const override;
+    Result<UnitOperationResult> stop_unit(const PodmanTarget& target,
+                                          std::string_view unit) const override;
     Result<UnitStatus> status(const PodmanTarget& target,
                               std::string_view unit) const override;
+
+private:
+    std::chrono::milliseconds job_timeout_;
 };
 #endif
 }

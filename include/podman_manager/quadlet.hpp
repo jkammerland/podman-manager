@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <sys/types.h>
@@ -23,9 +24,20 @@ struct InstalledQuadlet
     std::string systemd_unit;
 };
 
+struct QuadletSnapshot
+{
+    std::filesystem::path path;
+    std::string file_name;
+    bool existed{};
+    std::string contents;
+};
+
 struct QuadletInstallLayout
 {
     std::filesystem::path admin_user_root{"/etc/containers/systemd/users"};
+    std::optional<uid_t> required_owner_uid{0};
+    std::optional<gid_t> required_owner_gid{};
+    size_t max_quadlet_bytes{1024 * 1024};
 
     [[nodiscard]] std::filesystem::path user_directory(uid_t uid) const;
     [[nodiscard]] std::filesystem::path quadlet_path(uid_t uid, std::string_view file_name) const;
@@ -45,6 +57,7 @@ struct QuadletPolicy
     bool allow_host_userns{false};
     bool allow_devices{false};
     bool allow_root_mount{false};
+    bool allow_podman_args{false};
 };
 
 class ParsedQuadlet
@@ -56,6 +69,7 @@ public:
     [[nodiscard]] bool has_section(std::string_view section) const;
     [[nodiscard]] std::vector<std::string> values(std::string_view section,
                                                   std::string_view key) const;
+    [[nodiscard]] const std::map<std::string, Section>& sections() const noexcept;
 
     void add(std::string section, std::string key, std::string value);
 
@@ -79,6 +93,9 @@ public:
     [[nodiscard]] const QuadletPolicy& policy() const noexcept;
 
     Result<InstalledQuadlet> expected_install(uid_t uid, const QuadletFile& quadlet) const;
+    Result<QuadletSnapshot> snapshot_for_user(uid_t uid, std::string_view file_name) const;
+    Result<void> restore_for_user(uid_t uid, const QuadletSnapshot& snapshot) const;
+    Result<void> remove_for_user(uid_t uid, std::string_view file_name) const;
     Result<InstalledQuadlet> install_for_user(uid_t uid, const QuadletFile& quadlet) const;
 
 private:
@@ -86,4 +103,3 @@ private:
     QuadletPolicy policy_;
 };
 }
-

@@ -2,6 +2,27 @@
 
 namespace podman_manager
 {
+namespace
+{
+template <typename T>
+Result<T> rollback_error(const QuadletInstaller& installer,
+                         uid_t uid,
+                         const QuadletSnapshot& snapshot,
+                         Error original)
+{
+    auto rollback = installer.restore_for_user(uid, snapshot);
+    if (!rollback)
+    {
+        original.message += "; rollback failed: " + rollback.error().message;
+    }
+    else
+    {
+        original.message += "; rolled back installed Quadlet";
+    }
+    return std::unexpected(std::move(original));
+}
+}
+
 Result<void> validate_deployment_bundle(const DeploymentBundle& bundle)
 {
     if (bundle.target_uid == 0)
@@ -33,17 +54,35 @@ Result<void> validate_deployment_bundle(const DeploymentBundle& bundle)
     return {};
 }
 
+Result<void> BundleVerifier::verify(const DeploymentBundle& bundle) const
+{
+    // TODO: verify bundle signature, signer identity, manifest digest, and
+    // artifact-to-manifest binding before deployment. The current MVP assumes
+    // this verification happened before DeploymentOrchestrator::deploy().
+    (void)bundle;
+    return {};
+}
+
 DeploymentOrchestrator::DeploymentOrchestrator(QuadletInstaller installer,
-                                               UserSystemdController& systemd,
+                                               std::shared_ptr<UserSystemdController> systemd,
                                                DeploymentOptions options)
     : installer_{std::move(installer)}
-    , systemd_{&systemd}
+    , systemd_{std::move(systemd)}
     , options_{std::move(options)}
 {
 }
 
 Result<DeploymentResult> DeploymentOrchestrator::deploy(const DeploymentBundle& bundle) const
 {
+    if (!systemd_)
+    {
+        return std::unexpected(make_error(ErrorKind::invalid_argument,
+                                          "deployment orchestrator requires a systemd controller"));
+    }
+    if (auto verified = verifier_.verify(bundle); !verified)
+    {
+        return std::unexpected(verified.error());
+    }
     if (auto result = validate_deployment_bundle(bundle); !result)
     {
         return std::unexpected(result.error());
@@ -92,6 +131,12 @@ Result<DeploymentResult> DeploymentOrchestrator::deploy(const DeploymentBundle& 
         }
     }
 
+    auto snapshot = installer_.snapshot_for_user(bundle.target_uid, bundle.quadlet.file_name);
+    if (!snapshot)
+    {
+        return std::unexpected(snapshot.error());
+    }
+
     auto installed = installer_.install_for_user(bundle.target_uid, bundle.quadlet);
     if (!installed)
     {
@@ -102,23 +147,29 @@ Result<DeploymentResult> DeploymentOrchestrator::deploy(const DeploymentBundle& 
 
     if (auto reload = systemd_->daemon_reload(*target); !reload)
     {
-        return std::unexpected(reload.error());
+        return rollback_error<DeploymentResult>(installer_, bundle.target_uid, *snapshot, reload.error());
     }
 
     if (options_.restart_unit)
     {
-        auto job = systemd_->restart_unit(*target, result.systemd_unit);
-        if (!job)
+        auto operation = systemd_->restart_unit(*target, result.systemd_unit);
+        if (!operation)
         {
-            return std::unexpected(job.error());
+            return rollback_error<DeploymentResult>(installer_, bundle.target_uid, *snapshot, operation.error());
         }
-        result.job_path = *job;
+        result.job_path = operation->job_path;
+        result.status = operation->final_status;
+        return result;
     }
 
     auto status = systemd_->status(*target, result.systemd_unit);
     if (status)
     {
         result.status = *status;
+    }
+    else
+    {
+        result.status_error = status.error().message;
     }
 
     return result;

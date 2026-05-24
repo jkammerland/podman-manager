@@ -378,8 +378,25 @@ Result<void> SystemctlUserSystemdController::daemon_reload(const PodmanTarget& t
     return run_process(*args);
 }
 
-Result<std::string> SystemctlUserSystemdController::start_unit(const PodmanTarget& target,
-                                                               std::string_view unit) const
+namespace
+{
+Result<UnitOperationResult> completed_operation(const SystemctlUserSystemdController& controller,
+                                                const PodmanTarget& target,
+                                                std::string_view unit)
+{
+    auto status = controller.status(target, unit);
+    if (!status)
+    {
+        return std::unexpected(status.error());
+    }
+    UnitOperationResult out;
+    out.final_status = *status;
+    return out;
+}
+}
+
+Result<UnitOperationResult> SystemctlUserSystemdController::start_unit(const PodmanTarget& target,
+                                                                       std::string_view unit) const
 {
     auto args = build_systemctl_user_args(target, "start", unit);
     if (!args)
@@ -388,17 +405,17 @@ Result<std::string> SystemctlUserSystemdController::start_unit(const PodmanTarge
     }
     if (dry_run_)
     {
-        return {};
+        return completed_operation(*this, target, unit);
     }
     if (auto result = run_process(*args); !result)
     {
         return std::unexpected(result.error());
     }
-    return {};
+    return completed_operation(*this, target, unit);
 }
 
-Result<std::string> SystemctlUserSystemdController::restart_unit(const PodmanTarget& target,
-                                                                 std::string_view unit) const
+Result<UnitOperationResult> SystemctlUserSystemdController::restart_unit(const PodmanTarget& target,
+                                                                         std::string_view unit) const
 {
     auto args = build_systemctl_user_args(target, "restart", unit);
     if (!args)
@@ -407,17 +424,17 @@ Result<std::string> SystemctlUserSystemdController::restart_unit(const PodmanTar
     }
     if (dry_run_)
     {
-        return {};
+        return completed_operation(*this, target, unit);
     }
     if (auto result = run_process(*args); !result)
     {
         return std::unexpected(result.error());
     }
-    return {};
+    return completed_operation(*this, target, unit);
 }
 
-Result<std::string> SystemctlUserSystemdController::stop_unit(const PodmanTarget& target,
-                                                              std::string_view unit) const
+Result<UnitOperationResult> SystemctlUserSystemdController::stop_unit(const PodmanTarget& target,
+                                                                      std::string_view unit) const
 {
     auto args = build_systemctl_user_args(target, "stop", unit);
     if (!args)
@@ -426,13 +443,13 @@ Result<std::string> SystemctlUserSystemdController::stop_unit(const PodmanTarget
     }
     if (dry_run_)
     {
-        return {};
+        return completed_operation(*this, target, unit);
     }
     if (auto result = run_process(*args); !result)
     {
         return std::unexpected(result.error());
     }
-    return {};
+    return completed_operation(*this, target, unit);
 }
 
 Result<UnitStatus> SystemctlUserSystemdController::status(const PodmanTarget& target,

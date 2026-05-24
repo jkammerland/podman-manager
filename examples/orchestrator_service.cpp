@@ -5,15 +5,17 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
+#include <fcntl.h>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <netinet/in.h>
 #include <optional>
 #include <poll.h>
 #include <sstream>
 #include <string>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
 
@@ -33,6 +35,8 @@ struct Config
     std::string host{"127.0.0.1"};
     uint16_t port{9090};
     std::string api_version{"5.0.0"};
+    std::filesystem::path staging_root{"/var/lib/podman-manager/staging"};
+    size_t max_quadlet_size{1024 * 1024};
     bool dry_run{true};
     bool validate_socket{true};
 };
@@ -73,6 +77,7 @@ void usage(const char* argv0)
 {
     std::cerr << "usage: " << argv0
               << " [--listen 127.0.0.1:9090] [--api-version 5.0.0]"
+                 " [--staging-root /var/lib/podman-manager/staging]"
                  " [--execute] [--no-socket-validation]\n";
 }
 
@@ -97,7 +102,7 @@ pm::Result<Config> parse_args(int argc, char** argv)
             config.validate_socket = false;
             continue;
         }
-        if ((arg == "--listen" || arg == "--api-version") && i + 1 >= argc)
+        if ((arg == "--listen" || arg == "--api-version" || arg == "--staging-root") && i + 1 >= argc)
         {
             return std::unexpected(pm::make_error(pm::ErrorKind::invalid_argument,
                                                   arg + " requires a value"));
@@ -124,6 +129,11 @@ pm::Result<Config> parse_args(int argc, char** argv)
         if (arg == "--api-version")
         {
             config.api_version = argv[++i];
+            continue;
+        }
+        if (arg == "--staging-root")
+        {
+            config.staging_root = argv[++i];
             continue;
         }
         return std::unexpected(pm::make_error(pm::ErrorKind::invalid_argument,
@@ -255,23 +265,126 @@ std::string response(int status, std::string_view body, std::string_view content
     return out.str();
 }
 
-pm::Result<std::string> read_text_file(const std::filesystem::path& path)
+bool path_starts_with(const std::filesystem::path& child, const std::filesystem::path& parent)
 {
-    std::ifstream in{path, std::ios::binary};
-    if (!in)
+    auto child_it = child.begin();
+    auto parent_it = parent.begin();
+    for (; parent_it != parent.end(); ++parent_it, ++child_it)
+    {
+        if (child_it == child.end() || *child_it != *parent_it)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+pm::Result<std::string> read_staged_regular_file(const std::filesystem::path& staging_root,
+                                                 const std::filesystem::path& path,
+                                                 size_t max_size)
+{
+    std::error_code ec;
+    const auto canonical_root = std::filesystem::weakly_canonical(staging_root, ec);
+    if (ec)
     {
         return std::unexpected(pm::make_error(pm::ErrorKind::filesystem,
-                                              "failed to open file: " + path.string()));
+                                              "failed to resolve staging root: " + ec.message()));
+    }
+    const auto canonical_path = std::filesystem::weakly_canonical(path, ec);
+    if (ec)
+    {
+        return std::unexpected(pm::make_error(pm::ErrorKind::filesystem,
+                                              "failed to resolve staged file: " + ec.message()));
+    }
+    if (!path_starts_with(canonical_path, canonical_root))
+    {
+        return std::unexpected(pm::make_error(pm::ErrorKind::policy,
+                                              "staged file is outside staging root: " + canonical_path.string()));
     }
 
-    std::ostringstream out;
-    out << in.rdbuf();
-    if (!in.good() && !in.eof())
+    struct stat lst
+    {
+    };
+    if (lstat(path.c_str(), &lst) != 0)
     {
         return std::unexpected(pm::make_error(pm::ErrorKind::filesystem,
-                                              "failed to read file: " + path.string()));
+                                              "failed to lstat staged file: " + std::string{std::strerror(errno)},
+                                              0,
+                                              errno));
     }
-    return out.str();
+    if (S_ISLNK(lst.st_mode))
+    {
+        return std::unexpected(pm::make_error(pm::ErrorKind::policy,
+                                              "staged file must not be a symlink"));
+    }
+
+    const int raw_fd = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (raw_fd < 0)
+    {
+        return std::unexpected(pm::make_error(pm::ErrorKind::filesystem,
+                                              "failed to open staged file: " + std::string{std::strerror(errno)},
+                                              0,
+                                              errno));
+    }
+    struct CloseFd
+    {
+        void operator()(int* fd) const noexcept
+        {
+            if (fd != nullptr && *fd >= 0)
+            {
+                close(*fd);
+            }
+            delete fd;
+        }
+    };
+    std::unique_ptr<int, CloseFd> fd{new int{raw_fd}};
+
+    struct stat st
+    {
+    };
+    if (fstat(*fd, &st) != 0)
+    {
+        return std::unexpected(pm::make_error(pm::ErrorKind::filesystem,
+                                              "failed to stat staged file: " + std::string{std::strerror(errno)},
+                                              0,
+                                              errno));
+    }
+    if (!S_ISREG(st.st_mode))
+    {
+        return std::unexpected(pm::make_error(pm::ErrorKind::policy,
+                                              "staged file must be a regular file"));
+    }
+    if (st.st_size < 0 || static_cast<uintmax_t>(st.st_size) > max_size)
+    {
+        return std::unexpected(pm::make_error(pm::ErrorKind::policy,
+                                              "staged Quadlet file is too large"));
+    }
+
+    std::string out(static_cast<size_t>(st.st_size), '\0');
+    size_t offset = 0;
+    while (offset < out.size())
+    {
+        const auto n = read(*fd, out.data() + offset, out.size() - offset);
+        if (n < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            return std::unexpected(pm::make_error(pm::ErrorKind::filesystem,
+                                                  "failed to read staged file: " +
+                                                      std::string{std::strerror(errno)},
+                                                  0,
+                                                  errno));
+        }
+        if (n == 0)
+        {
+            return std::unexpected(pm::make_error(pm::ErrorKind::filesystem,
+                                                  "staged file changed while reading"));
+        }
+        offset += static_cast<size_t>(n);
+    }
+    return out;
 }
 
 pm::Result<std::string> service_name_from_quadlet_path(const std::filesystem::path& path)
@@ -302,7 +415,7 @@ pm::Result<std::string> handle_deploy_bundle(const Config& config, const Query& 
         return std::unexpected(target.error());
     }
 
-    auto contents = read_text_file(*quadlet_path);
+    auto contents = read_staged_regular_file(config.staging_root, *quadlet_path, config.max_quadlet_size);
     if (!contents)
     {
         return std::unexpected(contents.error());
@@ -329,7 +442,7 @@ pm::Result<std::string> handle_deploy_bundle(const Config& config, const Query& 
     }
 
     pm::QuadletInstaller installer;
-    pm::SystemctlUserSystemdController systemd{config.dry_run};
+    auto systemd = std::make_shared<pm::SystemctlUserSystemdController>(config.dry_run);
     pm::DeploymentOptions options;
     options.api_version = config.api_version;
     options.validate_socket = config.validate_socket;
@@ -348,7 +461,8 @@ pm::Result<std::string> handle_deploy_bundle(const Config& config, const Query& 
            ",\"targetUser\":" + json_escape(target->user_name) +
            ",\"installedQuadletPath\":" + json_escape(deployed->installed_quadlet_path.string()) +
            ",\"systemdUnit\":" + json_escape(deployed->systemd_unit) +
-           ",\"jobPath\":" + json_escape(deployed->job_path) + "}\n";
+           ",\"jobPath\":" + json_escape(deployed->job_path.value_or("")) +
+           ",\"statusError\":" + json_escape(deployed->status_error.value_or("")) + "}\n";
 }
 
 std::string handle_request(const Config& config, std::string_view raw)

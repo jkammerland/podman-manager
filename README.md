@@ -6,12 +6,20 @@ users.
 
 The current deployment path is:
 
-1. validate the supplied bundle and Quadlet policy,
+1. pass through an explicit bundle-verification boundary,
+2. validate the supplied bundle and Quadlet policy,
 2. optionally load an image archive through the target user's Podman API socket,
-3. atomically install the supplied `.container` Quadlet under
+3. snapshot the currently installed Quadlet,
+4. atomically install the supplied `.container` Quadlet under
    `/etc/containers/systemd/users/<uid>/`,
-4. reload the target user's systemd manager,
-5. restart the generated `.service` unit.
+5. reload the target user's systemd manager,
+6. restart the generated `.service` unit and verify final status,
+7. roll back the Quadlet if reload/restart fails.
+
+The MVP assumes the received bundle has already been signed and verified. The
+library contains a `BundleVerifier` TODO boundary so signature, manifest digest,
+signer identity, and artifact-to-manifest binding can be wired in without moving
+the deployment trust boundary.
 
 ## Build
 
@@ -34,10 +42,11 @@ the listener so a `uWebSockets` adapter can replace it later.
 - `DeploymentOrchestrator`: deploys a supplied image archive and supplied
   `.container` Quadlet for a target uid.
 - `QuadletInstaller`: validates policy and atomically installs supplied Quadlet
-  text into the configured admin-controlled rootless search path.
+  text into the configured admin-controlled rootless search path. It snapshots
+  existing files so deployments can roll back after post-install failures.
 - `UserSystemdController`: lifecycle abstraction for user systemd managers,
   with a `systemctl --user --machine=<user>@.host` backend and an optional
-  `sdbus-c++` backend.
+  `sdbus-c++` backend. Lifecycle methods return waited final status.
 - `ContainerSpec`: minimal SpecGenerator-compatible JSON for one-container
   deployments. This remains useful for direct Podman REST flows, but the
   bundle deployment path does not generate Quadlets from it.
@@ -53,7 +62,9 @@ Stage an image archive and Quadlet file. Dry-run mode is the default and does
 not contact Podman, write the Quadlet, or call systemd:
 
 ```bash
-./build/podman_manager_example_service --listen 127.0.0.1:9090
+./build/podman_manager_example_service \
+  --listen 127.0.0.1:9090 \
+  --staging-root /var/lib/podman-manager/staging
 
 curl -X POST \
   'http://127.0.0.1:9090/v1/deploy-bundle?user=alice&quadletPath=/var/lib/podman-manager/staging/demo.container&imageArchive=/var/lib/podman-manager/staging/demo.oci.tar&revision=42'
@@ -64,7 +75,9 @@ loads the image, installs the Quadlet, reloads the user manager, and restarts
 the generated service:
 
 ```bash
-sudo ./build/podman_manager_example_service --execute
+sudo ./build/podman_manager_example_service \
+  --execute \
+  --staging-root /var/lib/podman-manager/staging
 
 curl -X POST \
   'http://127.0.0.1:9090/v1/deploy-bundle?user=alice&quadletPath=/var/lib/podman-manager/staging/demo.container&imageArchive=/var/lib/podman-manager/staging/demo.oci.tar&revision=42'
@@ -94,6 +107,11 @@ TimeoutStartSec=900
 WantedBy=default.target
 ```
 
-The MVP policy rejects privileged containers, host networking, host PID/IPC/user
-namespaces, devices, root filesystem bind mounts, denied `PodmanArgs`, missing
-`Image=`, and missing managed label.
+The MVP policy rejects unsupported sections and keys, host-executing `[Service]`
+directives, `PodmanArgs=`, privileged containers, host networking, host
+PID/IPC/user namespaces, devices, host path bind mounts, `Rootfs=`, missing
+`Image=`, and missing or duplicate managed labels.
+
+The example service only reads staged Quadlet files under `--staging-root`.
+It opens staged files with `O_NOFOLLOW`, requires regular files, and caps
+Quadlet size at 1 MiB.

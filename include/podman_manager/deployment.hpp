@@ -7,6 +7,7 @@
 #include "podman_manager/systemd.hpp"
 
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <sys/types.h>
@@ -42,26 +43,39 @@ struct DeploymentResult
 {
     std::filesystem::path installed_quadlet_path;
     std::string systemd_unit;
-    std::string job_path;
+    std::optional<std::string> job_path;
     std::optional<UnitStatus> status;
+    std::optional<std::string> status_error;
     bool dry_run{};
+    bool rolled_back{};
 };
 
 Result<void> validate_deployment_bundle(const DeploymentBundle& bundle);
+
+class BundleVerifier
+{
+public:
+    Result<void> verify(const DeploymentBundle& bundle) const;
+};
 
 class DeploymentOrchestrator
 {
 public:
     DeploymentOrchestrator(QuadletInstaller installer,
-                           UserSystemdController& systemd,
+                           std::shared_ptr<UserSystemdController> systemd,
                            DeploymentOptions options = {});
+
+    DeploymentOrchestrator(const DeploymentOrchestrator&) = delete;
+    DeploymentOrchestrator& operator=(const DeploymentOrchestrator&) = delete;
+    DeploymentOrchestrator(DeploymentOrchestrator&&) noexcept = default;
+    DeploymentOrchestrator& operator=(DeploymentOrchestrator&&) noexcept = default;
 
     Result<DeploymentResult> deploy(const DeploymentBundle& bundle) const;
 
 private:
     QuadletInstaller installer_;
-    UserSystemdController* systemd_{};
+    std::shared_ptr<UserSystemdController> systemd_;
     DeploymentOptions options_;
+    BundleVerifier verifier_;
 };
 }
-
