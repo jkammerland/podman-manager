@@ -8,19 +8,39 @@ The current deployment path is:
 
 1. pass through an explicit bundle-verification boundary,
 2. validate the supplied bundle and Quadlet policy,
-2. optionally load a staged image archive through the target user's Podman API
+3. optionally load a staged image archive through the target user's Podman API
    socket,
-3. snapshot the currently installed Quadlet,
-4. atomically install the supplied `.container` Quadlet under
+4. snapshot the currently installed Quadlet,
+5. atomically install the supplied `.container` Quadlet under
    `/etc/containers/systemd/users/<uid>/`,
-5. reload the target user's systemd manager,
-6. restart the generated `.service` unit and verify final status,
-7. roll back the Quadlet if reload/restart fails.
+6. reload the target user's systemd manager,
+7. restart the generated `.service` unit and verify final status,
+8. roll back the Quadlet if reload/restart fails.
 
 The MVP assumes the received bundle has already been signed and verified. The
 library contains a `BundleVerifier` TODO boundary so signature, manifest digest,
 signer identity, and artifact-to-manifest binding can be wired in without moving
 the deployment trust boundary.
+
+Quadlet files are explicit deployment artifacts in this MVP. The root
+orchestrator does not synthesize `.container` files from `ContainerSpec` or any
+other runtime model; it validates, installs, snapshots, and rolls back the
+supplied Quadlet. Podman and systemd then generate the corresponding `.service`
+unit from that installed file during reload.
+
+If a higher-level service description is added later, generation should happen
+before signing and deployment, for example:
+
+```text
+service.yaml
+  -> podman-manager-quadletgen
+  -> demo.container
+  -> signed bundle manifest
+  -> runtime deployment
+```
+
+Runtime deployment should still consume the generated `.container` artifact, not
+silently create one from implicit defaults.
 
 Image loading through `DeploymentOrchestrator` requires
 `DeploymentOptions::image_archive_root`. Archive paths are opened relative to
@@ -178,17 +198,19 @@ flowchart TB
     subgraph staging["admin-controlled staging root"]
         manifest[manifest and signature TODO]
         image[image.oci.tar]
-        quadlet[demo.container]
+        source[optional service.yaml]
+        quadlet[supplied demo.container]
     end
 
     verifier -. assumes pre-verified MVP .-> manifest
+    source -. build-time generation only .-> quadlet
     policy --> quadlet
     podman -->|HTTP over Unix socket| socket["/run/user/<uid>/podman/podman.sock"]
     socket --> userpodman["target user's rootless Podman service"]
     userpodman --> images["target user's image store"]
     installer --> quadletdir["/etc/containers/systemd/users/<uid>/"]
     systemd -->|reload/restart/status| usermgr["target user's systemd manager"]
-    usermgr --> generated["generated .service from Quadlet"]
+    usermgr --> generated["systemd-generated .service from supplied Quadlet"]
     generated --> container["rootless container workload"]
     images --> container
 ```
