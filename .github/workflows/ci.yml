@@ -142,11 +142,11 @@ jobs:
           -DClang_DIR=${LLVM_PREFIX}/lib/cmake/clang
 
       - name: Build generated test wrapper
-        run: cmake --build build/tidy --target podman_manager_tests
+        run: cmake --build build/tidy --target pod_installer_tests
 
       - name: Run clang-tidy
         run: |
           clang-tidy-${LLVM_VERSION} -p build/tidy --quiet \
             src/*.cpp \
             examples/*.cpp \
-            build/tidy/gentest/podman_manager_tests/tu_0000_podman_manager_tests.gentest.cpp
+            build/tidy/gentest/pod_installer_tests/tu_0000_pod_installer_tests.gentest.cpp
