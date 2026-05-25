@@ -1,4 +1,4 @@
-#include "podman_manager/systemd.hpp"
+#include "pod_installer/systemd.hpp"
 
 #include <cctype>
 #include <cerrno>
@@ -12,7 +12,7 @@
 
 extern char **environ;
 
-namespace podman_manager {
+namespace pod_installer {
 namespace {
 bool safe_systemd_value(std::string_view value) {
     if (value.empty()) {
@@ -371,4 +371,4 @@ Result<UnitStatus> SystemctlUserSystemdController::status(const PodmanTarget &ta
     }
     return parse_show_status(unit, *output);
 }
-} // namespace podman_manager
+} // namespace pod_installer

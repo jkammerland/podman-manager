@@ -1,7 +1,7 @@
 #pragma once
 
-#include "podman_manager/error.hpp"
-#include "podman_manager/target.hpp"
+#include "pod_installer/error.hpp"
+#include "pod_installer/target.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -11,7 +11,7 @@
 #include <sys/types.h>
 #include <vector>
 
-namespace podman_manager {
+namespace pod_installer {
 struct UserSlicePolicy {
     uid_t                      uid{};
     std::optional<std::string> cpu_quota;
@@ -78,7 +78,7 @@ class SystemctlUserSystemdController final : public UserSystemdController {
     bool dry_run_{};
 };
 
-#if PODMAN_MANAGER_HAS_SDBUS
+#if POD_INSTALLER_HAS_SDBUS
 class SdbusUserSystemdController final : public UserSystemdController {
   public:
     explicit SdbusUserSystemdController(std::chrono::milliseconds job_timeout = std::chrono::seconds{30});
@@ -93,4 +93,4 @@ class SdbusUserSystemdController final : public UserSystemdController {
     std::chrono::milliseconds job_timeout_;
 };
 #endif
-} // namespace podman_manager
+} // namespace pod_installer

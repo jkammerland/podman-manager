@@ -1,4 +1,4 @@
-#include "podman_manager/target.hpp"
+#include "pod_installer/target.hpp"
 
 #include <cerrno>
 #include <cstring>
@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-namespace podman_manager {
+namespace pod_installer {
 std::filesystem::path RuntimeDirectoryLayout::runtime_dir_for(uid_t uid) const { return root / std::to_string(uid); }
 
 std::filesystem::path RuntimeDirectoryLayout::podman_socket_for(uid_t uid) const { return runtime_dir_for(uid) / "podman" / "podman.sock"; }
@@ -69,4 +69,4 @@ Result<PodmanTarget> resolve_uid(uid_t uid, const RuntimeDirectoryLayout &layout
 
     return make_target(pw.pw_uid, pw.pw_name, layout, std::move(api_version));
 }
-} // namespace podman_manager
+} // namespace pod_installer

@@ -1,13 +1,13 @@
 #pragma once
 
-#include "podman_manager/error.hpp"
+#include "pod_installer/error.hpp"
 
 #include <filesystem>
 #include <string>
 #include <string_view>
 #include <sys/types.h>
 
-namespace podman_manager {
+namespace pod_installer {
 struct RuntimeDirectoryLayout {
     std::filesystem::path root{"/run/user"};
 
@@ -28,4 +28,4 @@ PodmanTarget make_target(uid_t uid, std::string user_name, const RuntimeDirector
 Result<PodmanTarget> resolve_user(std::string_view user_name, const RuntimeDirectoryLayout &layout = {}, std::string api_version = "5.0.0");
 
 Result<PodmanTarget> resolve_uid(uid_t uid, const RuntimeDirectoryLayout &layout = {}, std::string api_version = "5.0.0");
-} // namespace podman_manager
+} // namespace pod_installer

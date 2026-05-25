@@ -1,4 +1,4 @@
-# podman-manager
+# pod-installer
 
 MVP C++23 library and example service for a root-owned orchestrator that deploys
 supplied image archives and supplied Quadlet files for multiple rootless Podman
@@ -33,7 +33,7 @@ before signing and deployment, for example:
 
 ```text
 service.yaml
-  -> podman-manager-quadletgen
+  -> pod-installer-quadletgen
   -> demo.container
   -> signed bundle manifest
   -> runtime deployment
@@ -77,7 +77,7 @@ toolchain. CMake first tries `find_package(gentest CONFIG)`, then a pinned
 FetchContent revision. For fully offline local development with a checkout:
 
 ```bash
-cmake --preset=debug -DPODMAN_MANAGER_GENTEST_SOURCE_DIR=/path/to/gentest
+cmake --preset=debug -DPOD_INSTALLER_GENTEST_SOURCE_DIR=/path/to/gentest
 cmake --build --preset=debug
 ctest --preset=debug
 ```
@@ -117,12 +117,12 @@ Stage an image archive and Quadlet file. Dry-run mode is the default and does
 not contact Podman, write the Quadlet, or call systemd:
 
 ```bash
-./build/podman_manager_example_service \
+./build/pod_installer_example_service \
   --listen 127.0.0.1:9090 \
-  --staging-root /var/lib/podman-manager/staging
+  --staging-root /var/lib/pod-installer/staging
 
 curl -X POST \
-  'http://127.0.0.1:9090/v1/deploy-bundle?user=alice&quadletPath=/var/lib/podman-manager/staging/demo.container&imageArchive=/var/lib/podman-manager/staging/demo.oci.tar&revision=42'
+  'http://127.0.0.1:9090/v1/deploy-bundle?user=alice&quadletPath=/var/lib/pod-installer/staging/demo.container&imageArchive=/var/lib/pod-installer/staging/demo.oci.tar&revision=42'
 ```
 
 Execute mode validates the target rootless socket when loading an image archive,
@@ -130,12 +130,12 @@ loads the image, installs the Quadlet, reloads the user manager, and restarts
 the generated service:
 
 ```bash
-sudo ./build/podman_manager_example_service \
+sudo ./build/pod_installer_example_service \
   --execute \
-  --staging-root /var/lib/podman-manager/staging
+  --staging-root /var/lib/pod-installer/staging
 
 curl -X POST \
-  'http://127.0.0.1:9090/v1/deploy-bundle?user=alice&quadletPath=/var/lib/podman-manager/staging/demo.container&imageArchive=/var/lib/podman-manager/staging/demo.oci.tar&revision=42'
+  'http://127.0.0.1:9090/v1/deploy-bundle?user=alice&quadletPath=/var/lib/pod-installer/staging/demo.container&imageArchive=/var/lib/pod-installer/staging/demo.oci.tar&revision=42'
 ```
 
 This example is local-only and unauthenticated. It is meant to demonstrate the
@@ -149,7 +149,7 @@ Description=Demo service
 
 [Container]
 Image=localhost/demo:latest
-Label=com.example.podman-manager.managed=true
+Label=com.example.pod-installer.managed=true
 ReadOnly=true
 NoNewPrivileges=true
 DropCapability=all

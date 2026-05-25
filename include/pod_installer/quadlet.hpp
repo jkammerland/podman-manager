@@ -1,6 +1,6 @@
 #pragma once
 
-#include "podman_manager/error.hpp"
+#include "pod_installer/error.hpp"
 
 #include <filesystem>
 #include <map>
@@ -10,7 +10,7 @@
 #include <sys/types.h>
 #include <vector>
 
-namespace podman_manager {
+namespace pod_installer {
 struct QuadletFile {
     std::string file_name;
     std::string contents;
@@ -42,7 +42,7 @@ struct QuadletPolicy {
     bool        require_container_section{true};
     bool        require_image{true};
     bool        require_managed_label{true};
-    std::string managed_label_key{"com.example.podman-manager.managed"};
+    std::string managed_label_key{"com.example.pod-installer.managed"};
     std::string managed_label_value{"true"};
     bool        allow_privileged{false};
     bool        allow_host_network{false};
@@ -91,4 +91,4 @@ class QuadletInstaller {
     QuadletInstallLayout layout_;
     QuadletPolicy        policy_;
 };
-} // namespace podman_manager
+} // namespace pod_installer

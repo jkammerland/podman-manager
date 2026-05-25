@@ -1,4 +1,4 @@
-#include "podman_manager/podman_manager.hpp"
+#include "pod_installer/pod_installer.hpp"
 
 #include <arpa/inet.h>
 #include <csignal>
@@ -22,7 +22,7 @@
 #include <utility>
 #include <vector>
 
-namespace pm = podman_manager;
+namespace pm = pod_installer;
 
 namespace {
 volatile std::sig_atomic_t g_stop = 0;
@@ -33,7 +33,7 @@ struct Config {
     std::string           host{"127.0.0.1"};
     uint16_t              port{9090};
     std::string           api_version{"5.0.0"};
-    std::filesystem::path staging_root{"/var/lib/podman-manager/staging"};
+    std::filesystem::path staging_root{"/var/lib/pod-installer/staging"};
     size_t                max_quadlet_size{static_cast<size_t>(1024) * 1024};
     bool                  dry_run{true};
     bool                  validate_socket{true};
@@ -68,7 +68,7 @@ struct Query {
 void usage(const char *argv0) {
     std::cerr << "usage: " << argv0
               << " [--listen 127.0.0.1:9090] [--api-version 5.0.0]"
-                 " [--staging-root /var/lib/podman-manager/staging]"
+                 " [--staging-root /var/lib/pod-installer/staging]"
                  " [--execute] [--no-socket-validation]\n";
 }
 
@@ -502,7 +502,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    std::cerr << "podman-manager example listening on " << config->host << ':' << config->port
+    std::cerr << "pod-installer example listening on " << config->host << ':' << config->port
               << (config->dry_run ? " in dry-run mode" : " in execute mode") << '\n';
 
     while (!g_stop) {

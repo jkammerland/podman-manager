@@ -1,18 +1,18 @@
 cmake_minimum_required(VERSION 3.31)
 
 project(
-    podman_manager
+    pod_installer
     VERSION 0.1.0
     DESCRIPTION "MVP root orchestrator library for rootless Podman users"
     LANGUAGES CXX)
 
-option(PODMAN_MANAGER_BUILD_EXAMPLES "Build example services" ON)
-option(PODMAN_MANAGER_BUILD_TESTS "Build tests" ON)
-option(PODMAN_MANAGER_WITH_SDBUS "Build the sdbus-c++ systemd backend when available" ON)
-set(PODMAN_MANAGER_GENTEST_SOURCE_DIR "" CACHE PATH
+option(POD_INSTALLER_BUILD_EXAMPLES "Build example services" ON)
+option(POD_INSTALLER_BUILD_TESTS "Build tests" ON)
+option(POD_INSTALLER_WITH_SDBUS "Build the sdbus-c++ systemd backend when available" ON)
+set(POD_INSTALLER_GENTEST_SOURCE_DIR "" CACHE PATH
     "Local gentest source checkout override for offline builds")
 
-if(PODMAN_MANAGER_BUILD_TESTS)
+if(POD_INSTALLER_BUILD_TESTS)
     set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL
         "Export compile commands for gentest code generation" FORCE)
 endif()
@@ -21,12 +21,12 @@ find_package(CURL REQUIRED)
 find_package(Threads REQUIRED)
 find_package(PkgConfig QUIET)
 
-if(PODMAN_MANAGER_WITH_SDBUS AND PkgConfig_FOUND)
+if(POD_INSTALLER_WITH_SDBUS AND PkgConfig_FOUND)
     pkg_check_modules(SDBUSCPP QUIET IMPORTED_TARGET sdbus-c++)
 endif()
 
 add_library(
-    podman_manager
+    pod_installer
     src/deployment.cpp
     src/container_spec.cpp
     src/error.cpp
@@ -38,48 +38,48 @@ add_library(
     src/target.cpp)
 
 if(SDBUSCPP_FOUND)
-    target_sources(podman_manager PRIVATE src/systemd_sdbus.cpp)
+    target_sources(pod_installer PRIVATE src/systemd_sdbus.cpp)
 endif()
 
-add_library(podman_manager::podman_manager ALIAS podman_manager)
+add_library(pod_installer::pod_installer ALIAS pod_installer)
 
-target_compile_features(podman_manager PUBLIC cxx_std_23)
+target_compile_features(pod_installer PUBLIC cxx_std_23)
 target_include_directories(
-    podman_manager
+    pod_installer
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>)
-target_link_libraries(podman_manager PUBLIC CURL::libcurl Threads::Threads)
+target_link_libraries(pod_installer PUBLIC CURL::libcurl Threads::Threads)
 
 if(SDBUSCPP_FOUND)
-    target_link_libraries(podman_manager PUBLIC PkgConfig::SDBUSCPP)
-    target_compile_definitions(podman_manager PUBLIC PODMAN_MANAGER_HAS_SDBUS=1)
+    target_link_libraries(pod_installer PUBLIC PkgConfig::SDBUSCPP)
+    target_compile_definitions(pod_installer PUBLIC POD_INSTALLER_HAS_SDBUS=1)
 else()
-    target_compile_definitions(podman_manager PUBLIC PODMAN_MANAGER_HAS_SDBUS=0)
+    target_compile_definitions(pod_installer PUBLIC POD_INSTALLER_HAS_SDBUS=0)
 endif()
 
 target_compile_options(
-    podman_manager
+    pod_installer
     PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -Wpedantic>)
 
-if(PODMAN_MANAGER_BUILD_EXAMPLES)
-    add_executable(podman_manager_example_service examples/orchestrator_service.cpp)
-    target_compile_features(podman_manager_example_service PRIVATE cxx_std_23)
-    target_link_libraries(podman_manager_example_service PRIVATE podman_manager::podman_manager)
+if(POD_INSTALLER_BUILD_EXAMPLES)
+    add_executable(pod_installer_example_service examples/orchestrator_service.cpp)
+    target_compile_features(pod_installer_example_service PRIVATE cxx_std_23)
+    target_link_libraries(pod_installer_example_service PRIVATE pod_installer::pod_installer)
     target_compile_options(
-        podman_manager_example_service
+        pod_installer_example_service
         PRIVATE
             $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -Wpedantic>)
 endif()
 
-if(PODMAN_MANAGER_BUILD_TESTS)
+if(POD_INSTALLER_BUILD_TESTS)
     get_property(is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
     if(is_multi_config)
         message(FATAL_ERROR
-            "PODMAN_MANAGER_BUILD_TESTS requires a single-config generator because "
+            "POD_INSTALLER_BUILD_TESTS requires a single-config generator because "
             "gentest code generation consumes compile_commands.json. Use Ninja/Unix "
-            "Makefiles or configure with -DPODMAN_MANAGER_BUILD_TESTS=OFF.")
+            "Makefiles or configure with -DPOD_INSTALLER_BUILD_TESTS=OFF.")
     endif()
 
     enable_testing()
@@ -88,10 +88,10 @@ if(PODMAN_MANAGER_BUILD_TESTS)
     if(NOT TARGET gentest::gentest_main)
         include(FetchContent)
         set(gentest_BUILD_TESTING OFF CACHE BOOL "Do not build gentest's own test suite" FORCE)
-        set(GENTEST_BUILD_CODEGEN ON CACHE BOOL "Build gentest_codegen for podman_manager tests" FORCE)
+        set(GENTEST_BUILD_CODEGEN ON CACHE BOOL "Build gentest_codegen for pod_installer tests" FORCE)
 
-        if(PODMAN_MANAGER_GENTEST_SOURCE_DIR)
-            FetchContent_Declare(gentest SOURCE_DIR "${PODMAN_MANAGER_GENTEST_SOURCE_DIR}")
+        if(POD_INSTALLER_GENTEST_SOURCE_DIR)
+            FetchContent_Declare(gentest SOURCE_DIR "${POD_INSTALLER_GENTEST_SOURCE_DIR}")
         else()
             FetchContent_Declare(
                 gentest
@@ -101,15 +101,15 @@ if(PODMAN_MANAGER_BUILD_TESTS)
         FetchContent_MakeAvailable(gentest)
     endif()
 
-    add_executable(podman_manager_tests tests/podman_manager_tests.cpp)
-    target_compile_features(podman_manager_tests PRIVATE cxx_std_23)
-    target_link_libraries(podman_manager_tests PRIVATE podman_manager::podman_manager gentest::gentest_main)
+    add_executable(pod_installer_tests tests/pod_installer_tests.cpp)
+    target_compile_features(pod_installer_tests PRIVATE cxx_std_23)
+    target_link_libraries(pod_installer_tests PRIVATE pod_installer::pod_installer gentest::gentest_main)
     target_compile_options(
-        podman_manager_tests
+        pod_installer_tests
         PRIVATE
             $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -Wpedantic -Wno-attributes -Wno-unused-function -Wno-unused-private-field>
             $<$<CXX_COMPILER_ID:MSVC>:/wd5030>)
 
-    gentest_attach_codegen(podman_manager_tests)
-    gentest_discover_tests(podman_manager_tests)
+    gentest_attach_codegen(pod_installer_tests)
+    gentest_discover_tests(pod_installer_tests)
 endif()

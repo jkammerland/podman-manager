@@ -1,4 +1,4 @@
-#include "podman_manager/podman_client.hpp"
+#include "pod_installer/podman_client.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -13,7 +13,7 @@
 #include <unistd.h>
 #include <utility>
 
-namespace podman_manager {
+namespace pod_installer {
 namespace {
 class CurlGlobal {
   public:
@@ -383,4 +383,4 @@ Result<HttpResponse> PodmanClient::load_image_archive_fd(int archive_fd, uintmax
 
     return require_success(finish_perform(curl.get(), std::move(response), curl_easy_perform(curl.get())), "load image archive");
 }
-} // namespace podman_manager
+} // namespace pod_installer

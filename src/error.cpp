@@ -1,8 +1,8 @@
-#include "podman_manager/error.hpp"
+#include "pod_installer/error.hpp"
 
 #include <utility>
 
-namespace podman_manager {
+namespace pod_installer {
 std::string_view to_string(ErrorKind kind) noexcept {
     switch (kind) {
     case ErrorKind::invalid_argument: return "invalid_argument";
@@ -23,4 +23,4 @@ Error make_error(ErrorKind kind, std::string message, long http_status, int os_e
                  .os_errno       = os_errno,
                  .transport_code = transport_code};
 }
-} // namespace podman_manager
+} // namespace pod_installer

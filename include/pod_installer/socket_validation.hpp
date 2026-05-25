@@ -1,9 +1,9 @@
 #pragma once
 
-#include "podman_manager/error.hpp"
-#include "podman_manager/target.hpp"
+#include "pod_installer/error.hpp"
+#include "pod_installer/target.hpp"
 
-namespace podman_manager {
+namespace pod_installer {
 struct SocketValidationOptions {
     bool                   require_socket{true};
     bool                   require_owner{true};
@@ -13,4 +13,4 @@ struct SocketValidationOptions {
 };
 
 Result<void> validate_podman_socket(const PodmanTarget &target, const SocketValidationOptions &options = {});
-} // namespace podman_manager
+} // namespace pod_installer

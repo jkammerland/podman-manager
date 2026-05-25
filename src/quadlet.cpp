@@ -1,4 +1,4 @@
-#include "podman_manager/quadlet.hpp"
+#include "pod_installer/quadlet.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -13,7 +13,7 @@
 #include <unistd.h>
 #include <utility>
 
-namespace podman_manager {
+namespace pod_installer {
 namespace {
 class FileDescriptor {
   public:
@@ -733,4 +733,4 @@ Result<InstalledQuadlet> QuadletInstaller::install_for_user(uid_t uid, const Qua
 
     return expected;
 }
-} // namespace podman_manager
+} // namespace pod_installer

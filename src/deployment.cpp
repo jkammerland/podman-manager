@@ -1,4 +1,4 @@
-#include "podman_manager/deployment.hpp"
+#include "pod_installer/deployment.hpp"
 
 #include <cerrno>
 #include <cstring>
@@ -10,7 +10,7 @@
 #include <unistd.h>
 #include <utility>
 
-namespace podman_manager {
+namespace pod_installer {
 namespace {
 class FileDescriptor {
   public:
@@ -411,4 +411,4 @@ Result<DeploymentResult> DeploymentOrchestrator::deploy(const DeploymentBundle &
 
     return result;
 }
-} // namespace podman_manager
+} // namespace pod_installer

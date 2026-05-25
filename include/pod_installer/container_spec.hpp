@@ -1,6 +1,6 @@
 #pragma once
 
-#include "podman_manager/error.hpp"
+#include "pod_installer/error.hpp"
 
 #include <cstdint>
 #include <map>
@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace podman_manager {
+namespace pod_installer {
 struct CpuLimits {
     std::optional<int64_t>     period;
     std::optional<int64_t>     quota;
@@ -45,4 +45,4 @@ struct ContainerSpec {
 
 Result<void>        validate_container_spec(const ContainerSpec &spec);
 Result<std::string> to_podman_create_json(const ContainerSpec &spec);
-} // namespace podman_manager
+} // namespace pod_installer

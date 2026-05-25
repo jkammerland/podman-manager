@@ -1,11 +1,11 @@
-#include "podman_manager/container_spec.hpp"
+#include "pod_installer/container_spec.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <iomanip>
 #include <sstream>
 
-namespace podman_manager {
+namespace pod_installer {
 namespace {
 bool has_control(std::string_view value) {
     return std::ranges::any_of(value, [](unsigned char c) { return c < 0x20; });
@@ -255,4 +255,4 @@ Result<std::string> to_podman_create_json(const ContainerSpec &spec) {
     out.push_back('}');
     return out;
 }
-} // namespace podman_manager
+} // namespace pod_installer

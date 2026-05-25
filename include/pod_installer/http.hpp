@@ -1,6 +1,6 @@
 #pragma once
 
-#include "podman_manager/error.hpp"
+#include "pod_installer/error.hpp"
 
 #include <optional>
 #include <string>
@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-namespace podman_manager {
+namespace pod_installer {
 struct HttpRequest {
     std::string                method{"GET"};
     std::string                path{"/"};
@@ -26,4 +26,4 @@ struct HttpResponse {
 
 std::string         url_encode_component(std::string_view input);
 Result<std::string> url_decode_component(std::string_view input, bool plus_as_space = false);
-} // namespace podman_manager
+} // namespace pod_installer

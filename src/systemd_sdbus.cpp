@@ -1,6 +1,6 @@
-#include "podman_manager/systemd.hpp"
+#include "pod_installer/systemd.hpp"
 
-#if PODMAN_MANAGER_HAS_SDBUS
+#if POD_INSTALLER_HAS_SDBUS
 
 #include <chrono>
 #include <filesystem>
@@ -9,7 +9,7 @@
 #include <optional>
 #include <sdbus-c++/sdbus-c++.h>
 
-namespace podman_manager {
+namespace pod_installer {
 namespace {
 constexpr auto systemd_service      = "org.freedesktop.systemd1";
 constexpr auto systemd_path         = "/org/freedesktop/systemd1";
@@ -178,6 +178,6 @@ Result<UnitStatus> SdbusUserSystemdController::status(const PodmanTarget &target
             make_error(ErrorKind::systemd, "systemd D-Bus status failed: " + error.getName() + ": " + error.getMessage()));
     }
 }
-} // namespace podman_manager
+} // namespace pod_installer
 
 #endif

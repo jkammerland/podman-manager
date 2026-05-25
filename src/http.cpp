@@ -1,4 +1,4 @@
-#include "podman_manager/http.hpp"
+#include "pod_installer/http.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -6,7 +6,7 @@
 #include <iomanip>
 #include <sstream>
 
-namespace podman_manager {
+namespace pod_installer {
 namespace {
 std::string lower_ascii(std::string_view value) {
     std::string out;
@@ -87,4 +87,4 @@ Result<std::string> url_decode_component(std::string_view input, bool plus_as_sp
 
     return out;
 }
-} // namespace podman_manager
+} // namespace pod_installer

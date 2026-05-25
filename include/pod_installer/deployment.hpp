@@ -1,10 +1,10 @@
 #pragma once
 
-#include "podman_manager/error.hpp"
-#include "podman_manager/podman_client.hpp"
-#include "podman_manager/quadlet.hpp"
-#include "podman_manager/socket_validation.hpp"
-#include "podman_manager/systemd.hpp"
+#include "pod_installer/error.hpp"
+#include "pod_installer/podman_client.hpp"
+#include "pod_installer/quadlet.hpp"
+#include "pod_installer/socket_validation.hpp"
+#include "pod_installer/systemd.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -13,7 +13,7 @@
 #include <string>
 #include <sys/types.h>
 
-namespace podman_manager {
+namespace pod_installer {
 struct ImageArchive {
     std::filesystem::path path;
     std::string           expected_sha256;
@@ -72,4 +72,4 @@ class DeploymentOrchestrator {
     DeploymentOptions                      options_;
     BundleVerifier                         verifier_;
 };
-} // namespace podman_manager
+} // namespace pod_installer

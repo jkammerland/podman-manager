@@ -1,10 +1,10 @@
-#include "podman_manager/socket_validation.hpp"
+#include "pod_installer/socket_validation.hpp"
 
 #include <cerrno>
 #include <cstring>
 #include <sys/stat.h>
 
-namespace podman_manager {
+namespace pod_installer {
 namespace {
 std::filesystem::path normalized(const std::filesystem::path &path) { return path.lexically_normal(); }
 } // namespace
@@ -46,4 +46,4 @@ Result<void> validate_podman_socket(const PodmanTarget &target, const SocketVali
 
     return {};
 }
-} // namespace podman_manager
+} // namespace pod_installer

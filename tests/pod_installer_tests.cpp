@@ -1,6 +1,6 @@
 #include "gentest/attributes.h"
 #include "gentest/runner.h"
-#include "podman_manager/podman_manager.hpp"
+#include "pod_installer/pod_installer.hpp"
 
 #include <cassert>
 #include <cerrno>
@@ -25,7 +25,7 @@
 #include <unistd.h>
 #include <vector>
 
-namespace pm = podman_manager;
+namespace pm = pod_installer;
 
 namespace {
 void test_check(bool condition, const char *expression, const char *file, int line) {
@@ -47,7 +47,7 @@ std::string valid_quadlet_contents() {
            "\n"
            "[Container]\n"
            "Image=localhost/demo:latest\n"
-           "Label=com.example.podman-manager.managed=true\n"
+           "Label=com.example.pod-installer.managed=true\n"
            "ReadOnly=true\n"
            "\n"
            "[Service]\n"
@@ -233,7 +233,7 @@ class StatusFailingSystemdController final : public pm::UserSystemdController {
 class TempDir {
   public:
     TempDir() {
-        auto  pattern = std::filesystem::temp_directory_path() / "podman-manager-test-XXXXXX";
+        auto  pattern = std::filesystem::temp_directory_path() / "pod-installer-test-XXXXXX";
         auto  value   = pattern.string();
         char *created = mkdtemp(value.data());
         assert(created != nullptr);
@@ -569,44 +569,44 @@ void test_quadlet_policy_and_install() {
 
     bad             = quadlet;
     bad.contents    = "[Container]\nImage=busybox\nPrivileged=true\n"
-                      "Label=com.example.podman-manager.managed=true\n";
+                      "Label=com.example.pod-installer.managed=true\n";
     auto privileged = pm::validate_quadlet_policy(bad);
     assert(!privileged);
     assert(privileged.error().kind == pm::ErrorKind::policy);
 
     bad          = quadlet;
     bad.contents = "[Container]\nImage=busybox\nNetwork=host\n"
-                   "Label=com.example.podman-manager.managed=true\n";
+                   "Label=com.example.pod-installer.managed=true\n";
     assert(!pm::validate_quadlet_policy(bad));
 
     bad          = quadlet;
     bad.contents = "[Container]\nImage=busybox\nAddDevice=/dev/kvm\n"
-                   "Label=com.example.podman-manager.managed=true\n";
+                   "Label=com.example.pod-installer.managed=true\n";
     assert(!pm::validate_quadlet_policy(bad));
 
     bad          = quadlet;
     bad.contents = "[Container]\nImage=busybox\nMount=type=bind,source=/,target=/host\n"
-                   "Label=com.example.podman-manager.managed=true\n";
+                   "Label=com.example.pod-installer.managed=true\n";
     assert(!pm::validate_quadlet_policy(bad));
 
     bad          = quadlet;
     bad.contents = "[Container]\nImage=busybox\nVolume=../../home/alice/.ssh:/loot:ro\n"
-                   "Label=com.example.podman-manager.managed=true\n";
+                   "Label=com.example.pod-installer.managed=true\n";
     assert(!pm::validate_quadlet_policy(bad));
 
     bad          = quadlet;
     bad.contents = "[Container]\nImage=busybox\nMount=type=bind,source=../../host,target=/host\n"
-                   "Label=com.example.podman-manager.managed=true\n";
+                   "Label=com.example.pod-installer.managed=true\n";
     assert(!pm::validate_quadlet_policy(bad));
 
     bad          = quadlet;
     bad.contents = "[Container]\nImage=busybox\nRootfs=/\n"
-                   "Label=com.example.podman-manager.managed=true\n";
+                   "Label=com.example.pod-installer.managed=true\n";
     assert(!pm::validate_quadlet_policy(bad));
 
     bad          = quadlet;
     bad.contents = "[Container]\nImage=busybox\nPodmanArgs=--network host\n"
-                   "Label=com.example.podman-manager.managed=true\n";
+                   "Label=com.example.pod-installer.managed=true\n";
     assert(!pm::validate_quadlet_policy(bad));
 
     pm::QuadletPolicy podman_args_policy;
@@ -615,13 +615,13 @@ void test_quadlet_policy_and_install() {
 
     bad          = quadlet;
     bad.contents = "[Container]\nImage=busybox\n"
-                   "Label=com.example.podman-manager.managed=true\n"
-                   "Label=com.example.podman-manager.managed=false\n";
+                   "Label=com.example.pod-installer.managed=true\n"
+                   "Label=com.example.pod-installer.managed=false\n";
     assert(!pm::validate_quadlet_policy(bad));
 
     bad          = quadlet;
     bad.contents = "[Container]\nImage=busybox\n"
-                   "Label=com.example.podman-manager.managed=true\n"
+                   "Label=com.example.pod-installer.managed=true\n"
                    "\n[Service]\nExecStartPre=/bin/sh -c id\n";
     assert(!pm::validate_quadlet_policy(bad));
 
@@ -657,7 +657,7 @@ void test_quadlet_parser_policy_edges() {
     auto parsed = pm::parse_quadlet("# comment\r\n"
                                     "[Container]\r\n"
                                     "Image = busybox\r\n"
-                                    "Label=com.example.podman-manager.managed=true\r\n"
+                                    "Label=com.example.pod-installer.managed=true\r\n"
                                     "; another comment\r\n");
     assert(parsed);
     assert(parsed->values("Container", "Image").front() == "busybox");
@@ -673,17 +673,17 @@ void test_quadlet_parser_policy_edges() {
     assert(!pm::validate_quadlet_policy(quadlet));
 
     quadlet.contents = "[Container]\nImage=busybox\n"
-                       "Label=com.example.podman-manager.managed=true\n"
+                       "Label=com.example.pod-installer.managed=true\n"
                        "\n[Timer]\nOnBootSec=1\n";
     assert(!pm::validate_quadlet_policy(quadlet));
 
     quadlet.contents = "[Container]\nImage=busybox\n"
-                       "Label=com.example.podman-manager.managed=true\n"
+                       "Label=com.example.pod-installer.managed=true\n"
                        "EnvironmentFile=/tmp/secrets\n";
     assert(!pm::validate_quadlet_policy(quadlet));
 
     quadlet.contents = "[Container]\nImage=busybox\n"
-                       "Label=com.example.podman-manager.managed=true\n"
+                       "Label=com.example.pod-installer.managed=true\n"
                        "PodmanArgs=--log-driver journald --pull never\n";
     pm::QuadletPolicy podman_args_policy;
     podman_args_policy.allow_podman_args = true;
@@ -695,25 +695,25 @@ void test_quadlet_parser_policy_edges() {
     };
     for (const auto &denied : denied_args) {
         quadlet.contents = "[Container]\nImage=busybox\n"
-                           "Label=com.example.podman-manager.managed=true\n"
+                           "Label=com.example.pod-installer.managed=true\n"
                            "PodmanArgs=" +
                            denied + "\n";
         assert(!pm::validate_quadlet_policy(quadlet, podman_args_policy));
     }
 
     quadlet.contents = "[Container]\nImage=busybox\n"
-                       "Label=com.example.podman-manager.managed=true\n"
+                       "Label=com.example.pod-installer.managed=true\n"
                        "PodmanArgs=--privileged\n";
     assert(!pm::validate_quadlet_policy(quadlet, podman_args_policy));
     podman_args_policy.allow_privileged = true;
     assert(pm::validate_quadlet_policy(quadlet, podman_args_policy));
     quadlet.contents = "[Container]\nImage=busybox\n"
-                       "Label=com.example.podman-manager.managed=true\n"
+                       "Label=com.example.pod-installer.managed=true\n"
                        "PodmanArgs=--privileged=true\n";
     assert(pm::validate_quadlet_policy(quadlet, podman_args_policy));
 
     quadlet.contents = "[Container]\nImage=busybox\n"
-                       "Label=com.example.podman-manager.managed=true\n"
+                       "Label=com.example.pod-installer.managed=true\n"
                        "Network=host\n"
                        "PID=host\n"
                        "IPCHost=true\n"
@@ -754,7 +754,7 @@ void test_quadlet_installer_snapshot_restore_edges() {
 
     pm::QuadletFile changed = quadlet;
     changed.contents        = "[Container]\nImage=busybox:changed\n"
-                              "Label=com.example.podman-manager.managed=true\n";
+                              "Label=com.example.pod-installer.managed=true\n";
     assert(installer.install_for_user(getuid(), changed));
     assert(installer.restore_for_user(getuid(), *snapshot));
     assert(read_file(installed->path) == quadlet.contents);
@@ -1015,7 +1015,7 @@ void test_deployment_rolls_back_when_restart_fails() {
     bundle.service_name      = "demo";
     bundle.quadlet.file_name = "demo.container";
     bundle.quadlet.contents  = "[Unit]\nDescription=New Demo\n\n[Container]\nImage=localhost/demo:new\n"
-                               "Label=com.example.podman-manager.managed=true\nReadOnly=true\n";
+                               "Label=com.example.pod-installer.managed=true\nReadOnly=true\n";
 
     auto                  systemd = std::make_shared<FailingRestartSystemdController>();
     pm::DeploymentOptions options;
@@ -1057,7 +1057,7 @@ void test_deployment_rolls_back_when_restart_status_is_unhealthy() {
     bundle.service_name      = "demo";
     bundle.quadlet.file_name = "demo.container";
     bundle.quadlet.contents  = "[Unit]\nDescription=New Demo\n\n[Container]\nImage=localhost/demo:new\n"
-                               "Label=com.example.podman-manager.managed=true\nReadOnly=true\n";
+                               "Label=com.example.pod-installer.managed=true\nReadOnly=true\n";
 
     auto                  systemd = std::make_shared<UnhealthyRestartSystemdController>();
     pm::DeploymentOptions options;

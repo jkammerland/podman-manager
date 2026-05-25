@@ -39,7 +39,7 @@
       "displayName": "Debug Without sdbus-c++",
       "inherits": "debug",
       "cacheVariables": {
-        "PODMAN_MANAGER_WITH_SDBUS": "OFF"
+        "POD_INSTALLER_WITH_SDBUS": "OFF"
       }
     },
     {

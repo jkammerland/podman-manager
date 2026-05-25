@@ -1,8 +1,8 @@
 #pragma once
 
-#include "podman_manager/container_spec.hpp"
-#include "podman_manager/http.hpp"
-#include "podman_manager/target.hpp"
+#include "pod_installer/container_spec.hpp"
+#include "pod_installer/http.hpp"
+#include "pod_installer/target.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -10,7 +10,7 @@
 #include <string_view>
 #include <vector>
 
-namespace podman_manager {
+namespace pod_installer {
 struct ClientOptions {
     std::chrono::milliseconds timeout{5000};
     std::string               base_url{"http://d"};
@@ -38,4 +38,4 @@ class PodmanClient {
     PodmanTarget  target_;
     ClientOptions options_;
 };
-} // namespace podman_manager
+} // namespace pod_installer
